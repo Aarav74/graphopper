@@ -1,7 +1,3 @@
-# main.py
-# A FastAPI backend to snap coordinates to the nearest road using GraphHopper Route API.
-# Uses Folium for interactive maps.
-
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
