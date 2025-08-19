@@ -9,9 +9,8 @@ from typing import List
 GRAPH_HOPPER_API_KEY = "add4c752-8787-4a6b-ae81-6c8a357504b4"
 
 app = FastAPI()
-
 class Coordinates(BaseModel):
-    coordinates: List[List[float]]  
+    coordinates: List[List[float]]
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -194,3 +193,6 @@ async def generate_map_from_coords(data: Coordinates):
         raise HTTPException(status_code=500, detail=f"GraphHopper API request failed: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
+    
+    
+    
