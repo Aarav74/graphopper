@@ -15,11 +15,9 @@ GRAPH_HOPPER_API_KEY = "add4c752-8787-4a6b-ae81-6c8a357504b4"
 
 app = FastAPI()
 
-# Add CORS middleware to allow requests from the Spring Boot frontend
-# The 'origins' list specifies which URLs are allowed to make requests to this API.
 origins = [
-    "http://localhost:8080", # Your Spring Boot frontend's address
-    "http://127.0.0.1:8080",  # A common alternative for local development
+    "http://localhost:8080", 
+    "http://127.0.0.1:8080", 
 ]
 
 app.add_middleware(
