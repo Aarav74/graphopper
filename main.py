@@ -1,5 +1,10 @@
+# main.py
+# A FastAPI backend to snap coordinates to the nearest road using GraphHopper Route API.
+# Uses Folium for interactive maps.
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware # Import the CORS middleware
 from pydantic import BaseModel
 import requests
 import folium
@@ -9,6 +14,22 @@ from typing import List
 GRAPH_HOPPER_API_KEY = "add4c752-8787-4a6b-ae81-6c8a357504b4"
 
 app = FastAPI()
+
+# Add CORS middleware to allow requests from the Spring Boot frontend
+# The 'origins' list specifies which URLs are allowed to make requests to this API.
+origins = [
+    "http://localhost:8080", # Your Spring Boot frontend's address
+    "http://127.0.0.1:8080",  # A common alternative for local development
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Allows all HTTP methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"], # Allows all headers in the request
+)
+
 class Coordinates(BaseModel):
     coordinates: List[List[float]]
 
@@ -78,7 +99,7 @@ async def serve_frontend():
                     return;
                 }
 
-                const points = coordinatesText.split('\\n').map(line => {
+                const points = coordinatesText.split('\n').map(line => {
                     const parts = line.split(',').map(s => parseFloat(s.trim()));
                     return [parts[0], parts[1]];
                 }).filter(p => !isNaN(p[0]) && !isNaN(p[1]) && p.length === 2);
@@ -109,7 +130,7 @@ async def serve_frontend():
                         mapContainer.innerHTML = data.map_html;
                         roadCoordsResult.textContent = data.road_coordinates
                             .map(coord => `[${coord[0].toFixed(6)}, ${coord[1].toFixed(6)}]`)
-                            .join('\\n');
+                            .join('\n');
                     } else {
                         mapContainer.innerHTML = '';
                         roadCoordsResult.textContent = 'No road found.';
@@ -151,7 +172,13 @@ async def generate_map_from_coords(data: Coordinates):
         raise HTTPException(status_code=400, detail="GraphHopper API key not configured.")
 
     try:
+        # Check if the list of coordinates is not empty
+        if not data.coordinates:
+            raise HTTPException(status_code=400, detail="No coordinates provided.")
+            
         lat, lon = data.coordinates[0]
+        # To make a valid route request, we need at least two points.
+        # We can add a very small offset to the first point to create a second.
         fake_lat, fake_lon = lat + 0.0001, lon + 0.0001
 
         response = requests.get(
@@ -160,7 +187,7 @@ async def generate_map_from_coords(data: Coordinates):
                 "point": [f"{lat},{lon}", f"{fake_lat},{fake_lon}"],
                 "vehicle": "car",
                 "locale": "en",
-                "points_encoded": "false",   # important: get coordinates, not polyline string
+                "points_encoded": "false",
                 "key": GRAPH_HOPPER_API_KEY
             },
             timeout=10
@@ -172,14 +199,15 @@ async def generate_map_from_coords(data: Coordinates):
             path = graphhopper_data["paths"][0]
 
             if isinstance(path["points"], dict) and "coordinates" in path["points"]:
+                # GraphHopper sometimes returns GeoJSON-like format [lon, lat]
                 road_coords_list = [[lat, lon] for lon, lat in path["points"]["coordinates"]]
             else:
                 road_coords_list = polyline.decode(path["points"])
 
+            # Map generation and markers
             m = folium.Map(location=road_coords_list[0], zoom_start=16)
             folium.Marker([lat, lon], icon=folium.Icon(color="red")).add_to(m)
             folium.PolyLine(road_coords_list, color="blue", weight=5, opacity=0.7).add_to(m)
-
             m.fit_bounds(m.get_bounds())
 
             return JSONResponse(content={
@@ -193,6 +221,3 @@ async def generate_map_from_coords(data: Coordinates):
         raise HTTPException(status_code=500, detail=f"GraphHopper API request failed: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
-    
-    
-    
