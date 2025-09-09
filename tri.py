@@ -1,0 +1,145 @@
+import numpy as np
+
+class KalmanFilter:
+    """
+    A simple Kalman filter for 2D position and velocity.
+    The state is [x, y, vx, vy].
+    """
+
+    def __init__(self, process_variance, measurement_variance, initial_state):
+        #                     Q                 R              state vector[x, y, vx, vy]
+        """
+        Initializes the Kalman filter.
+
+        Args:
+            process_variance (float): The uncertainty in the motion model (Q).
+            measurement_variance (float): The uncertainty in the measurements (R).
+            initial_state (np.array): The initial state vector [x, y, vx, vy].
+        """
+        # State vector [x, y, vx, vy]^T
+        self.state_estimate = initial_state
+        # State covariance matrix P
+        self.P = np.eye(4) * 1000  # High initial uncertainty
+
+        # Process noise covariance matrix Q
+        self.Q = np.eye(4) * process_variance # Yeh predict step mein system mein aane wali uncertainty ko add karta hai.
+
+        # Measurement noise covariance matrix R
+        self.R = np.eye(2) * measurement_variance
+
+        # Measurement matrix H
+        self.H = np.array([[1, 0, 0, 0],   #state vector se kya measure kar rhe hai
+                           [0, 1, 0, 0]])  #sirf position components ko select karta hai
+
+    def predict(self, dt):
+        """
+        Predicts the next state of the system based on the motion model.
+
+        Args:
+            dt (float): The time step since the last update.
+        """
+        # State transition matrix F
+        F = np.array([[1, 0, dt, 0],   # Yeh current state ko agle state mein project karta hai
+                      [0, 1, 0, dt],
+                      [0, 0, 1, 0],
+                      [0, 0, 0, 1]])
+
+        # Predict the next state estimate
+        self.state_estimate = F @ self.state_estimate
+
+        # Predict the next state covariance
+        self.P = F @ self.P @ F.T + self.Q   #Yeh line agle state estimate ko predict karti hai, F.T is the transpose of the F
+
+    def update(self, measurement):
+        """
+        Updates the state estimate with a new measurement.
+
+        Args:
+            measurement (np.array): The measurement vector [x, y]^T.
+        """
+        # Kalman Gain K
+        S = self.H @ self.P @ self.H.T + self.R
+        K = self.P @ self.H.T @ np.linalg.inv(S)
+
+        # Update the state estimate
+        self.state_estimate = self.state_estimate + K @ (measurement - self.H @ self.state_estimate)
+ 
+        # Update the state covariance
+        I = np.eye(4)
+        self.P = (I - K @ self.H) @ self.P
+
+    def get_location(self):
+        """
+        Returns the current estimated location (x, y).
+        """
+        return self.state_estimate[0], self.state_estimate[1]
+
+def get_user_input():
+    """
+    Prompts the user for a series of longitude, latitude, and time data.
+    """
+    data_points = []
+    try:
+        num_points = int(input("How many location-time pairs will you enter? "))
+        if num_points <= 0:
+            print("Please enter a positive number.")
+            return None
+        
+        for i in range(num_points):
+            print(f"\nEntering data for measurement {i + 1}:")
+            longitude = float(input("Enter longitude: "))
+            latitude = float(input("Enter latitude: "))
+            # The timestamp is provided in milliseconds, so we convert it to seconds
+            # for the Kalman filter's time step (dt).
+            timestamp_ms = int(input("Enter timestamp (in milliseconds, e.g., 1721721120000): "))
+            timestamp_s = timestamp_ms / 1000.0
+            data_points.append({'lon': longitude, 'lat': latitude, 'time': timestamp_s})
+        
+        return data_points
+        
+    except ValueError:
+        print("\nInvalid input. Please enter a valid number.")
+        return None
+
+if __name__ == "__main__":
+    
+    measurements = get_user_input()
+    
+    if measurements and len(measurements) >= 2:
+        # Initial setup using the first measurement
+        initial_lon = measurements[0]['lon']
+        initial_lat = measurements[0]['lat']
+        
+        # Initialize the filter with an initial state and variance parameters
+        initial_state = np.array([initial_lon, initial_lat, 0, 0])
+        # Increased measurement variance to give the filter more "trust" in the prediction over the measurement
+        kf = KalmanFilter(process_variance=0.1, measurement_variance=10.0, initial_state=initial_state)
+
+        print("\n--- Kalman Filter Location Estimation ---")
+        print(f"Initial Measurement: ({initial_lon:.6f}, {initial_lat:.6f})")
+        
+        # We process the first measurement separately
+        last_timestamp = measurements[0]['time']
+        
+        # Process subsequent measurements
+        for i in range(1, len(measurements)):
+            current_time = measurements[i]['time']
+            dt = current_time - last_timestamp
+            
+            if dt > 0:
+                # Prediction step
+                kf.predict(dt)
+            
+            # Update step with the new measurement
+            measured_location = np.array([measurements[i]['lon'], measurements[i]['lat']])
+            kf.update(measured_location)
+            
+            # Print results
+            estimated_location = kf.get_location()
+            print(f"\nMeasurement {i + 1}:")
+            print(f"  Raw: ({measurements[i]['lon']:.6f}, {measurements[i]['lat']:.6f})")
+            print(f"  Estimated: ({estimated_location[0]:.6f}, {estimated_location[1]:.6f})")
+            
+            last_timestamp = current_time
+    elif measurements and len(measurements) < 2:
+        print("Please provide at least two measurements to use the Kalman filter.")
