@@ -29,7 +29,7 @@ class KalmanFilter:
 
         # Measurement matrix H
         self.H = np.array([[1, 0, 0, 0],   #state vector se kya measure kar rhe hai
-                           [0, 1, 0, 0]])  #sirf position components ko select karta hai
+                           [0, 1, 0, 0]])  #sirf position components ko sel1758773043000ect karta hai
 
     def predict(self, dt):
         """
@@ -48,7 +48,7 @@ class KalmanFilter:
         self.state_estimate = F @ self.state_estimate
 
         # Predict the next state covariance
-        self.P = F @ self.P @ F.T + self.Q   #Yeh line agle state estimate ko predict karti hai, F.T is the transpose of the F
+        self.P = F @ self.P @ F.T + self.Q   #Yeh line agle state estimate ko predict karti hai,
 
     def update(self, measurement):
         """
@@ -57,16 +57,15 @@ class KalmanFilter:
         Args:
             measurement (np.array): The measurement vector [x, y]^T.
         """
-        # Kalman Gain K
-        S = self.H @ self.P @ self.H.T + self.R
-        K = self.P @ self.H.T @ np.linalg.inv(S)
+        S = self.H @ self.P @ self.H.T + self.R #Yeh predicted measurement aur actual measurement ke beech ke difference (innovation) ki uncertainty ko calculate karta hai.
+        K = self.P @ self.H.T @ np.linalg.inv(S) #Kalman Gain, "weight" jo btati hai ki prediction or measurement se kispe jyada trust kre
 
         # Update the state estimate
         self.state_estimate = self.state_estimate + K @ (measurement - self.H @ self.state_estimate)
  
         # Update the state covariance
-        I = np.eye(4)
-        self.P = (I - K @ self.H) @ self.P
+        I = np.eye(4)  #4X4 identity matrix
+        self.P = (I - K @ self.H) @ self.P  #update P
 
     def get_location(self):
         """
@@ -87,13 +86,14 @@ def get_user_input():
         
         for i in range(num_points):
             print(f"\nEntering data for measurement {i + 1}:")
-            longitude = float(input("Enter longitude: "))
             latitude = float(input("Enter latitude: "))
+            longitude = float(input("Enter longitude: "))
+            
             # The timestamp is provided in milliseconds, so we convert it to seconds
             # for the Kalman filter's time step (dt).
-            timestamp_ms = int(input("Enter timestamp (in milliseconds, e.g., 1721721120000): "))
-            timestamp_s = timestamp_ms / 1000.0
-            data_points.append({'lon': longitude, 'lat': latitude, 'time': timestamp_s})
+            timestamp_ms = int(input("Enter timestamp (in milliseconds: "))
+            timestamp_s = timestamp_ms / 1000.0 #converting the time into seconds
+            data_points.append({ 'lat': latitude,'lon': longitude,'time': timestamp_s})
         
         return data_points
         
@@ -103,17 +103,18 @@ def get_user_input():
 
 if __name__ == "__main__":
     
-    measurements = get_user_input()
+    measurements = get_user_input() #function ko call krke user se data le rhe hai
     
-    if measurements and len(measurements) >= 2:
-        # Initial setup using the first measurement
-        initial_lon = measurements[0]['lon']
+    if measurements and len(measurements) >= 2: #check krte hai user n valid data diya hai ya nhi
+   
         initial_lat = measurements[0]['lat']
+        initial_lon = measurements[0]['lon']
         
-        # Initialize the filter with an initial state and variance parameters
+        
+
         initial_state = np.array([initial_lon, initial_lat, 0, 0])
         # Increased measurement variance to give the filter more "trust" in the prediction over the measurement
-        kf = KalmanFilter(process_variance=0.1, measurement_variance=10.0, initial_state=initial_state)
+        kf = KalmanFilter(process_variance=0.1, measurement_variance=10.0, initial_state=initial_state) #hum filter ko bol rhe hai measurement m bhot noise hai
 
         print("\n--- Kalman Filter Location Estimation ---")
         print(f"Initial Measurement: ({initial_lon:.6f}, {initial_lat:.6f})")
@@ -122,20 +123,20 @@ if __name__ == "__main__":
         last_timestamp = measurements[0]['time']
         
         # Process subsequent measurements
-        for i in range(1, len(measurements)):
+        for i in range(1, len(measurements)):  #dusri measurement k liye loop
             current_time = measurements[i]['time']
-            dt = current_time - last_timestamp
+            dt = current_time - last_timestamp #dt = current aur previous measurement ke beech ka samay hai.
             
-            if dt > 0:
+            if dt > 0: #if dt is not positive then skip the prediction step
                 # Prediction step
                 kf.predict(dt)
             
             # Update step with the new measurement
-            measured_location = np.array([measurements[i]['lon'], measurements[i]['lat']])
-            kf.update(measured_location)
+            measured_location = np.array([measurements[i]['lon'], measurements[i]['lat']]) #curr measurement to numpy array m convert kiya jaata hai
+            kf.update(measured_location) #filter ko nayi measurement se correct kiya jaata hai
             
-            # Print results
-            estimated_location = kf.get_location()
+            # Print results 
+            estimated_location = kf.get_location() #filter ka last estimated location liya jata hai
             print(f"\nMeasurement {i + 1}:")
             print(f"  Raw: ({measurements[i]['lon']:.6f}, {measurements[i]['lat']:.6f})")
             print(f"  Estimated: ({estimated_location[0]:.6f}, {estimated_location[1]:.6f})")
