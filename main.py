@@ -1,158 +1,420 @@
-# main.py
-# A FastAPI backend to snap coordinates to the nearest road using GraphHopper Route API.
-# Uses Folium for interactive maps.
-
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware # Import the CORS middleware
-from pydantic import BaseModel
+import numpy as np
 import requests
-import folium
-import polyline
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 from typing import List
-
-GRAPH_HOPPER_API_KEY = "add4c752-8787-4a6b-ae81-6c8a357504b4"
+import urllib.parse
 
 app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-origins = [
-    "http://localhost:8080", 
-    "http://127.0.0.1:8080", 
-]
+class KalmanFilter:
+    def __init__(self, process_variance, measurement_variance, initial_state):
+        self.state_estimate = np.array(initial_state, dtype=np.float64)
+        self.P = np.eye(4) * 1000
+        self.Q = np.eye(4) * process_variance
+        self.R = np.eye(2) * measurement_variance
+        self.H = np.array([[1, 0, 0, 0], [0, 1, 0, 0]], dtype=np.float64)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"], # Allows all HTTP methods (GET, POST, PUT, DELETE, etc.)
-    allow_headers=["*"], # Allows all headers in the request
-)
+    def predict(self, dt):
+        F = np.array([[1, 0, dt, 0], [0, 1, 0, dt], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=np.float64)
+        self.state_estimate = F @ self.state_estimate
+        self.P = F @ self.P @ F.T + self.Q
 
-class Coordinates(BaseModel):
-    coordinates: List[List[float]]
+    def update(self, measurement):
+        S = self.H @ self.P @ self.H.T + self.R
+        K = self.P @ self.H.T @ np.linalg.inv(S)
+        self.state_estimate = self.state_estimate + K @ (measurement - self.H @ self.state_estimate)
+        I = np.eye(4)
+        self.P = (I - K @ self.H) @ self.P
+
+    def get_location(self):
+        return self.state_estimate[0], self.state_estimate[1]
+
+class Measurement(BaseModel):
+    latitude: float
+    longitude: float
+    timestamp: int
+
+class MeasurementsData(BaseModel):
+    measurements: List[Measurement] = Field(..., min_items=2)
 
 @app.get("/", response_class=HTMLResponse)
-async def serve_frontend():
+async def serve_index():
     html_content = """
     <!DOCTYPE html>
-    <html lang="en">
+    <html>
     <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Road Finder with Folium</title>
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+        <title>Kalman Filter Tracker</title>
         <script src="https://cdn.tailwindcss.com"></script>
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <style>
             body { font-family: 'Inter', sans-serif; }
-            #map-container {
-                height: 600px;
-                width: 100%;
-                border-radius: 1rem;
-                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            }
+            #map { height: 400px; width: 100%; }
+            .leaflet-container { border-radius: 0.5rem; }
+            .custom-marker { background: transparent; border: none; }
         </style>
     </head>
-    <body class="bg-gray-100 p-8 flex flex-col items-center min-h-screen">
-        <div class="max-w-4xl w-full bg-white p-8 rounded-2xl shadow-xl flex flex-col space-y-8">
-            <h1 class="text-4xl font-bold text-center text-gray-800">coordinates approximater</h1>
-            <p class="text-center text-gray-600">Enter coordinates to snap them to the nearest road using GraphHopper.</p>
-
-            <div id="loading" class="hidden text-center text-blue-500 font-semibold">
-                Finding road...
-            </div>
-
-            <div class="flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4">
+    <body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-lg p-8 w-full max-w-4xl">
+            <h1 class="text-3xl font-bold text-center text-gray-800 mb-2">Kalman Filter Location Tracker</h1>
+            <p class="text-center text-gray-500 mb-6">Enter a series of location measurements to see the filter's estimation and plot it on a map.</p>
+            
+            <div class="flex items-end space-x-4 mb-4">
                 <div class="flex-1">
-                    <label for="coordinates" class="block text-gray-700 font-semibold mb-2">Coordinates (lat, lon pairs):</label>
-                    <textarea id="coordinates" rows="8" class="w-full p-4 rounded-lg border-2 border-gray-300 focus:outline-none focus:border-blue-500 transition-colors duration-200" placeholder="Enter coordinates on separate lines, e.g.:&#10;52.5200, 13.4050"></textarea>
+                    <label for="latitude" class="block text-sm font-medium text-gray-700">Latitude</label>
+                    <input type="number" id="latitude" placeholder="e.g., 28.560833" step="any" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50 p-2 border">
                 </div>
-
-                <div class="flex-1 flex flex-col justify-end">
-                    <button id="findRoadBtn" class="bg-blue-600 text-white font-bold py-4 rounded-lg shadow-lg hover:bg-blue-700 transition-all duration-300 ease-in-out transform hover:scale-105">
-                        Find Road loacation
-                    </button>
-                    <div id="results" class="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
-                        <h3 class="text-lg font-semibold text-gray-700">Results:</h3>
-                        <p id="road-coords" class="text-sm text-gray-600 mt-2 whitespace-pre-wrap"></p>
+                <div class="flex-1">
+                    <label for="longitude" class="block text-sm font-medium text-gray-700">Longitude</label>
+                    <input type="number" id="longitude" placeholder="e.g., 77.367222" step="any" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50 p-2 border">
+                </div>
+                <div class="flex-1">
+                    <label for="timestamp" class="block text-sm font-medium text-gray-700">Timestamp (ms)</label>
+                    <input type="number" id="timestamp" placeholder="e.g., 1721721000000" step="1" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50 p-2 border">
+                </div>
+                <button id="addMeasurementBtn" class="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-300">
+                    Add
+                </button>
+            </div>
+            
+            <div id="measurementsList" class="mb-4 bg-gray-50 rounded-lg p-4 max-h-40 overflow-y-auto">
+                <p class="text-sm text-gray-500 text-center">No measurements added yet.</p>
+            </div>
+            
+            <button id="calculateBtn" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-300">
+                Calculate & Plot
+            </button>
+            
+            <div id="resultsSection" class="mt-8">
+                <h2 class="text-xl font-bold text-gray-800 mb-2">Final Estimated Location</h2>
+                <div class="bg-gray-50 p-4 rounded-lg shadow-inner">
+                    <p class="text-gray-700 font-medium text-lg mb-2">
+                        Final Coordinates: <span id="finalCoords">-</span>
+                    </p>
+                    <p class="text-gray-500 italic">
+                        Address: <span id="finalAddress">Add measurements and click Calculate to see results</span>
+                    </p>
+                </div>
+                
+                <h2 class="text-xl font-bold text-gray-800 mt-6 mb-2">Location Map</h2>
+                <div id="mapContainer" class="w-full rounded-lg shadow-inner">
+                    <div id="map"></div>
+                    <div id="mapLoading" class="text-gray-500 text-center py-20 bg-gray-100 rounded-lg">
+                        Map is loading... Add measurements and click Calculate to see plotted points.
+                    </div>
+                </div>
+                
+                <div class="mt-4 bg-blue-50 p-3 rounded-lg">
+                    <p class="text-sm text-blue-700">
+                        <span class="font-semibold">Map Legend:</span><br>
+                        <span style="color: red">● Red markers</span> - Input measurements (numbered)<br>
+                        <span style="color: green">● Green marker</span> - Final estimated location<br>
+                        <span style="color: gray">━ Gray line</span> - Path between input measurements<br>
+                        <span style="color: blue">━ Blue dashed line</span> - Connection to final estimate
+                    </p>
+                </div>
+            </div>
+            
+            <div id="alertModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full hidden z-50">
+                <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+                    <div class="mt-3 text-center">
+                        <h3 class="text-lg leading-6 font-medium text-gray-900" id="alertTitle"></h3>
+                        <div class="mt-2 px-7 py-3">
+                            <p class="text-sm text-gray-500" id="alertMessage"></p>
+                        </div>
+                        <div class="items-center px-4 py-3">
+                            <button id="alertCloseBtn" class="px-4 py-2 bg-blue-500 text-white text-base font-medium rounded-md w-full shadow-sm hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-300">
+                                OK
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
-
-            <div id="map-container"></div>
         </div>
-        
+
         <script>
-            const findRoadBtn = document.getElementById('findRoadBtn');
-            const coordinatesInput = document.getElementById('coordinates');
-            const roadCoordsResult = document.getElementById('road-coords');
-            const loadingIndicator = document.getElementById('loading');
-            const mapContainer = document.getElementById('map-container');
+            const addMeasurementBtn = document.getElementById('addMeasurementBtn');
+            const calculateBtn = document.getElementById('calculateBtn');
+            const latitudeInput = document.getElementById('latitude');
+            const longitudeInput = document.getElementById('longitude');
+            const timestampInput = document.getElementById('timestamp');
+            const measurementsList = document.getElementById('measurementsList');
+            const resultsSection = document.getElementById('resultsSection');
+            const finalCoordsSpan = document.getElementById('finalCoords');
+            const finalAddressSpan = document.getElementById('finalAddress');
+            const mapContainer = document.getElementById('map');
+            const mapLoading = document.getElementById('mapLoading');
+            const alertModal = document.getElementById('alertModal');
+            const alertTitle = document.getElementById('alertTitle');
+            const alertMessage = document.getElementById('alertMessage');
+            const alertCloseBtn = document.getElementById('alertCloseBtn');
+            
+            let measurements = [];
+            let map = null;
+            let markers = [];
+            let polylines = [];
 
-            findRoadBtn.addEventListener('click', async () => {
-                const coordinatesText = coordinatesInput.value.trim();
-                if (!coordinatesText) {
-                    showNotification('Please enter coordinates.');
+            // Initialize map on page load with a default location (New Delhi)
+            function initializeMap() {
+                // Default center (New Delhi)
+                const defaultCenter = [28.6139, 77.2090];
+                
+                map = L.map('map').setView(defaultCenter, 10);
+                
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '© OpenStreetMap contributors',
+                    maxZoom: 18
+                }).addTo(map);
+                
+                // Add a default marker to show the map is working
+                addMarker(defaultCenter[0], defaultCenter[1], 'blue', '?', 'Default location: New Delhi<br>Add measurements to see actual data');
+                
+                mapLoading.style.display = 'none';
+                mapContainer.style.display = 'block';
+            }
+
+            // Initialize map when page loads
+            document.addEventListener('DOMContentLoaded', function() {
+                initializeMap();
+            });
+
+            function showAlert(title, message) {
+                alertTitle.textContent = title;
+                alertMessage.textContent = message;
+                alertModal.classList.remove('hidden');
+            }
+
+            alertCloseBtn.addEventListener('click', () => {
+                alertModal.classList.add('hidden');
+            });
+
+            addMeasurementBtn.addEventListener('click', () => {
+                const latitude = parseFloat(latitudeInput.value);
+                const longitude = parseFloat(longitudeInput.value);
+                const timestamp = parseInt(timestampInput.value);
+                
+                if (isNaN(latitude) || isNaN(longitude) || isNaN(timestamp)) {
+                    showAlert("Invalid Input", "Please enter valid numbers for all fields.");
                     return;
                 }
-
-                const points = coordinatesText.split('\n').map(line => {
-                    const parts = line.split(',').map(s => parseFloat(s.trim()));
-                    return [parts[0], parts[1]];
-                }).filter(p => !isNaN(p[0]) && !isNaN(p[1]) && p.length === 2);
-
-                if (points.length === 0) {
-                    showNotification('Invalid coordinate format. Please use lat,lon on each line.');
+                
+                if (latitude < -90 || latitude > 90) {
+                    showAlert("Invalid Latitude", "Latitude must be between -90 and 90 degrees.");
                     return;
                 }
-
-                loadingIndicator.classList.remove('hidden');
-                findRoadBtn.disabled = true;
-
-                try {
-                    const response = await fetch('/generate-map', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ coordinates: points }),
-                    });
-
-                    if (!response.ok) {
-                        const errorData = await response.json();
-                        throw new Error(errorData.detail || 'Unknown error.');
-                    }
-
-                    const data = await response.json();
-                    
-                    if (data.map_html && data.road_coordinates.length > 0) {
-                        mapContainer.innerHTML = data.map_html;
-                        roadCoordsResult.textContent = data.road_coordinates
-                            .map(coord => `[${coord[0].toFixed(6)}, ${coord[1].toFixed(6)}]`)
-                            .join('\n');
-                    } else {
-                        mapContainer.innerHTML = '';
-                        roadCoordsResult.textContent = 'No road found.';
-                    }
-                } catch (error) {
-                    console.error('Error:', error);
-                    roadCoordsResult.textContent = `Error: ${error.message}`;
-                    showNotification(error.message);
-                } finally {
-                    loadingIndicator.classList.add('hidden');
-                    findRoadBtn.disabled = false;
+                
+                if (longitude < -180 || longitude > 180) {
+                    showAlert("Invalid Longitude", "Longitude must be between -180 and 180 degrees.");
+                    return;
+                }
+                
+                measurements.push({ latitude, longitude, timestamp });
+                
+                if (measurementsList.firstElementChild.tagName === 'P') {
+                    measurementsList.innerHTML = '';
+                }
+                
+                const listItem = document.createElement('div');
+                listItem.className = "text-gray-700 text-sm p-2 bg-white rounded-md mb-2 shadow-sm";
+                listItem.textContent = `Measurement ${measurements.length}: Lat: ${latitude.toFixed(6)}, Lon: ${longitude.toFixed(6)}, Time: ${timestamp}`;
+                measurementsList.appendChild(listItem);
+                
+                latitudeInput.value = '';
+                longitudeInput.value = '';
+                timestampInput.value = '';
+                
+                // If this is the first measurement, update the map center
+                if (measurements.length === 1) {
+                    map.setView([latitude, longitude], 13);
+                    clearMap();
                 }
             });
 
-            function showNotification(message) {
-                const notification = document.createElement('div');
-                notification.className = 'fixed bottom-4 left-1/2 -translate-x-1/2 bg-red-600 text-white p-4 rounded-lg shadow-lg z-50 transition-all duration-500 ease-in-out transform';
-                notification.textContent = message;
-                document.body.appendChild(notification);
+            function clearMap() {
+                markers.forEach(marker => {
+                    if (map.hasLayer(marker)) {
+                        map.removeLayer(marker);
+                    }
+                });
+                polylines.forEach(polyline => {
+                    if (map.hasLayer(polyline)) {
+                        map.removeLayer(polyline);
+                    }
+                });
+                markers = [];
+                polylines = [];
+            }
+
+            function addMarker(lat, lng, color, label, popupText) {
+                const icon = L.divIcon({
+                    html: `<div style="background-color: ${color}; width: 24px; height: 24px; border-radius: 50%; border: 3px solid white; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">${label}</div>`,
+                    className: 'custom-marker',
+                    iconSize: [30, 30],
+                    iconAnchor: [15, 15]
+                });
+                
+                const marker = L.marker([lat, lng], { icon: icon })
+                    .addTo(map)
+                    .bindPopup(popupText);
+                
+                markers.push(marker);
+                return marker;
+            }
+
+            function addPolyline(points, color, weight, dashArray = null) {
+                const polyline = L.polyline(points, {
+                    color: color,
+                    weight: weight,
+                    opacity: 0.8,
+                    dashArray: dashArray
+                }).addTo(map);
+                
+                polylines.push(polyline);
+                return polyline;
+            }
+
+            function plotPointsOnMap(measurements, finalCoords, finalAddress) {
+                clearMap();
+                
+                // Add input measurement markers and polyline
+                const inputPoints = [];
+                measurements.forEach((measurement, index) => {
+                    const point = [measurement.latitude, measurement.longitude];
+                    inputPoints.push(point);
+                    addMarker(
+                        measurement.latitude, 
+                        measurement.longitude, 
+                        'red', 
+                        index + 1,
+                        `Measurement ${index + 1}<br>Lat: ${measurement.latitude.toFixed(6)}<br>Lon: ${measurement.longitude.toFixed(6)}<br>Time: ${measurement.timestamp}`
+                    );
+                });
+                
+                // Add polyline connecting input measurements
+                if (inputPoints.length > 1) {
+                    addPolyline(inputPoints, 'gray', 5);
+                }
+                
+                // Add final estimated location marker
+                const finalPoint = [finalCoords[1], finalCoords[0]];
+                addMarker(
+                    finalCoords[1], 
+                    finalCoords[0], 
+                    'green', 
+                    'F',
+                    `Final Estimate<br>Lat: ${finalCoords[1].toFixed(6)}<br>Lon: ${finalCoords[0].toFixed(6)}<br>${finalAddress}`
+                );
+                
+                // Add dashed line from last measurement to final estimate
+                if (inputPoints.length > 0) {
+                    const lastPoint = inputPoints[inputPoints.length - 1];
+                    addPolyline([lastPoint, finalPoint], 'blue', 3, '5, 10');
+                }
+                
+                // Fit map to show all points with padding
+                const allPoints = [...inputPoints, finalPoint];
+                const group = new L.featureGroup(markers.concat(polylines));
+                map.fitBounds(group.getBounds().pad(0.1));
+                
+                // Update results display
+                finalCoordsSpan.textContent = `(${finalCoords[0].toFixed(6)}, ${finalCoords[1].toFixed(6)})`;
+                finalAddressSpan.textContent = finalAddress;
+            }
+
+            calculateBtn.addEventListener('click', async () => {
+                if (measurements.length < 2) {
+                    showAlert("Not Enough Data", "Please add at least two measurements to run the filter.");
+                    return;
+                }
+                
+                finalCoordsSpan.textContent = 'Calculating...';
+                finalAddressSpan.textContent = 'Calculating address...';
+                mapLoading.style.display = 'block';
+                mapContainer.style.display = 'none';
+                
+                try {
+                    const response = await fetch('/calculate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ measurements })
+                    });
+                    
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        throw new Error(`Server error: ${response.status} - ${errorText}`);
+                    }
+                    
+                    const data = await response.json();
+                    const finalCoords = data.final_estimated_location;
+                    const finalAddress = data.final_address;
+
+                    // Plot all points on the map
+                    plotPointsOnMap(measurements, finalCoords, finalAddress);
+                    
+                    mapLoading.style.display = 'none';
+                    mapContainer.style.display = 'block';
+                    
+                } catch (error) {
+                    showAlert("Calculation Error", error.message);
+                    finalCoordsSpan.textContent = 'Error';
+                    finalAddressSpan.textContent = 'Error';
+                    mapLoading.style.display = 'block';
+                    mapContainer.style.display = 'none';
+                }
+            });
+
+            // Handle Enter key in input fields
+            [latitudeInput, longitudeInput, timestampInput].forEach(input => {
+                input.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        addMeasurementBtn.click();
+                    }
+                });
+            });
+
+            // Add sample data button for testing
+            const sampleDataBtn = document.createElement('button');
+            sampleDataBtn.textContent = 'Load Sample Data';
+            sampleDataBtn.className = 'w-full bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-300 mt-2';
+            sampleDataBtn.onclick = loadSampleData;
+            calculateBtn.parentNode.insertBefore(sampleDataBtn, calculateBtn.nextSibling);
+
+            function loadSampleData() {
+                // Clear existing measurements
+                measurements = [];
+                measurementsList.innerHTML = '<p class="text-sm text-gray-500 text-center">No measurements added yet.</p>';
+                
+                // Sample data around New Delhi
+                const sampleMeasurements = [
+                    { latitude: 28.6139, longitude: 77.2090, timestamp: 1721721000000 },
+                    { latitude: 28.6200, longitude: 77.2150, timestamp: 1721721001000 },
+                    { latitude: 28.6250, longitude: 77.2200, timestamp: 1721721002000 },
+                    { latitude: 28.6300, longitude: 77.2250, timestamp: 1721721003000 },
+                    { latitude: 28.6350, longitude: 77.2300, timestamp: 1721721004000 }
+                ];
+                
+                // Add sample measurements
+                sampleMeasurements.forEach(measurement => {
+                    measurements.push(measurement);
+                    
+                    if (measurementsList.firstElementChild.tagName === 'P') {
+                        measurementsList.innerHTML = '';
+                    }
+                    
+                    const listItem = document.createElement('div');
+                    listItem.className = "text-gray-700 text-sm p-2 bg-white rounded-md mb-2 shadow-sm";
+                    listItem.textContent = `Measurement ${measurements.length}: Lat: ${measurement.latitude.toFixed(6)}, Lon: ${measurement.longitude.toFixed(6)}, Time: ${measurement.timestamp}`;
+                    measurementsList.appendChild(listItem);
+                });
+                
+                // Auto-calculate after loading sample data
                 setTimeout(() => {
-                    notification.classList.add('opacity-0');
-                    notification.classList.add('translate-y-full');
-                    setTimeout(() => document.body.removeChild(notification), 500);
-                }, 5000);
+                    calculateBtn.click();
+                }, 500);
             }
         </script>
     </body>
@@ -160,62 +422,65 @@ async def serve_frontend():
     """
     return HTMLResponse(content=html_content)
 
-@app.post("/generate-map", response_class=JSONResponse)
-async def generate_map_from_coords(data: Coordinates):
-    """
-    Takes coordinates, snaps them to the nearest road via GraphHopper Route API,
-    and returns Folium map + road geometry
-    """
-    if not GRAPH_HOPPER_API_KEY:
-        raise HTTPException(status_code=400, detail="GraphHopper API key not configured.")
-
+@app.post("/calculate")
+async def calculate_location(data: MeasurementsData):
     try:
-        # Check if the list of coordinates is not empty
-        if not data.coordinates:
-            raise HTTPException(status_code=400, detail="No coordinates provided.")
+        measurements = data.measurements
+        
+        # Sort measurements by timestamp to ensure proper order
+        measurements.sort(key=lambda x: x.timestamp)
+        
+        initial_lat = measurements[0].latitude
+        initial_lon = measurements[0].longitude
+        initial_state = np.array([initial_lon, initial_lat, 0, 0], dtype=np.float64)
+        
+        kf = KalmanFilter(process_variance=0.1, measurement_variance=10.0, initial_state=initial_state)
+        last_timestamp = measurements[0].timestamp / 1000.0
+        
+        for i in range(1, len(measurements)):
+            current_time = measurements[i].timestamp / 1000.0
+            dt = current_time - last_timestamp
             
-        lat, lon = data.coordinates[0]
-        # To make a valid route request, we need at least two points.
-        # We can add a very small offset to the first point to create a second.
-        fake_lat, fake_lon = lat + 0.0001, lon + 0.0001
-
-        response = requests.get(
-            "https://graphhopper.com/api/1/route",
-            params={
-                "point": [f"{lat},{lon}", f"{fake_lat},{fake_lon}"],
-                "vehicle": "car",
-                "locale": "en",
-                "points_encoded": "false",
-                "key": GRAPH_HOPPER_API_KEY
-            },
-            timeout=10
-        )
-        response.raise_for_status()
-        graphhopper_data = response.json()
-
-        if "paths" in graphhopper_data and graphhopper_data["paths"]:
-            path = graphhopper_data["paths"][0]
-
-            if isinstance(path["points"], dict) and "coordinates" in path["points"]:
-                # GraphHopper sometimes returns GeoJSON-like format [lon, lat]
-                road_coords_list = [[lat, lon] for lon, lat in path["points"]["coordinates"]]
-            else:
-                road_coords_list = polyline.decode(path["points"])
-
-            # Map generation and markers
-            m = folium.Map(location=road_coords_list[0], zoom_start=16)
-            folium.Marker([lat, lon], icon=folium.Icon(color="red")).add_to(m)
-            folium.PolyLine(road_coords_list, color="blue", weight=5, opacity=0.7).add_to(m)
-            m.fit_bounds(m.get_bounds())
-
-            return JSONResponse(content={
-                "map_html": m._repr_html_(),
-                "road_coordinates": road_coords_list
-            })
-        else:
-            return JSONResponse(content={"map_html": "", "road_coordinates": []})
-
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"GraphHopper API request failed: {e}")
+            if dt > 0:
+                kf.predict(dt)
+            
+            measured_location = np.array([measurements[i].longitude, measurements[i].latitude], dtype=np.float64)
+            kf.update(measured_location)
+            last_timestamp = current_time
+        
+        final_estimated_location = kf.get_location()
+        lat = float(final_estimated_location[1])
+        lon = float(final_estimated_location[0])
+        
+        # Get address
+        final_address = await get_address(lat, lon)
+        
+        return {
+            "final_estimated_location": [lon, lat],
+            "final_address": final_address
+        }
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+async def get_address(lat: float, lon: float) -> str:
+    """Get address from coordinates using Nominatim"""
+    try:
+        geocode_url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18"
+        headers = {
+            'User-Agent': 'Kalman-Filter-Tracker/1.0'
+        }
+        
+        response = requests.get(geocode_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        address = data.get('display_name', 'Address not found')
+        return address
+        
+    except Exception as e:
+        return f"Address lookup failed: {str(e)}"
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

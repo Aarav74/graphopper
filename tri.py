@@ -7,7 +7,7 @@ class KalmanFilter:
     """
 
     def __init__(self, process_variance, measurement_variance, initial_state):
-        #                     Q                 R              state vector[x, y, vx, vy]
+        #                                Q                  R           state vector[x, y, vx, vy]
         """
         Initializes the Kalman filter.
 
@@ -28,8 +28,8 @@ class KalmanFilter:
         self.R = np.eye(2) * measurement_variance
 
         # Measurement matrix H
-        self.H = np.array([[1, 0, 0, 0],   #state vector se kya measure kar rhe hai
-                           [0, 1, 0, 0]])  #sirf position components ko sel1758773043000ect karta hai
+        self.H = np.array([[1, 0, 0, 0],  #state vector se kya measure kar rhe hai
+                          [0, 1, 0, 0]])  #sirf position components ko select karta hai
 
     def predict(self, dt):
         """
@@ -39,7 +39,7 @@ class KalmanFilter:
             dt (float): The time step since the last update.
         """
         # State transition matrix F
-        F = np.array([[1, 0, dt, 0],   # Yeh current state ko agle state mein project karta hai
+        F = np.array([[1, 0, dt, 0],  # Yeh current state ko agle state mein project karta hai
                       [0, 1, 0, dt],
                       [0, 0, 1, 0],
                       [0, 0, 0, 1]])
@@ -48,7 +48,7 @@ class KalmanFilter:
         self.state_estimate = F @ self.state_estimate
 
         # Predict the next state covariance
-        self.P = F @ self.P @ F.T + self.Q   #Yeh line agle state estimate ko predict karti hai,
+        self.P = F @ self.P @ F.T + self.Q  #Yeh line agle state estimate ko predict karti hai.
 
     def update(self, measurement):
         """
@@ -106,18 +106,15 @@ if __name__ == "__main__":
     measurements = get_user_input() #function ko call krke user se data le rhe hai
     
     if measurements and len(measurements) >= 2: #check krte hai user n valid data diya hai ya nhi
-   
+    
         initial_lat = measurements[0]['lat']
         initial_lon = measurements[0]['lon']
         
-        
-
         initial_state = np.array([initial_lon, initial_lat, 0, 0])
         # Increased measurement variance to give the filter more "trust" in the prediction over the measurement
         kf = KalmanFilter(process_variance=0.1, measurement_variance=10.0, initial_state=initial_state) #hum filter ko bol rhe hai measurement m bhot noise hai
 
         print("\n--- Kalman Filter Location Estimation ---")
-        print(f"Initial Measurement: ({initial_lon:.6f}, {initial_lat:.6f})")
         
         # We process the first measurement separately
         last_timestamp = measurements[0]['time']
@@ -135,12 +132,11 @@ if __name__ == "__main__":
             measured_location = np.array([measurements[i]['lon'], measurements[i]['lat']]) #curr measurement to numpy array m convert kiya jaata hai
             kf.update(measured_location) #filter ko nayi measurement se correct kiya jaata hai
             
-            # Print results 
-            estimated_location = kf.get_location() #filter ka last estimated location liya jata hai
-            print(f"\nMeasurement {i + 1}:")
-            print(f"  Raw: ({measurements[i]['lon']:.6f}, {measurements[i]['lat']:.6f})")
-            print(f"  Estimated: ({estimated_location[0]:.6f}, {estimated_location[1]:.6f})")
-            
             last_timestamp = current_time
+        
+        # Only print the final result after the loop is complete
+        final_estimated_location = kf.get_location()
+        print(f"\nFinal Estimated Location: ({final_estimated_location[0]:.6f}, {final_estimated_location[1]:.6f})")
+
     elif measurements and len(measurements) < 2:
         print("Please provide at least two measurements to use the Kalman filter.")

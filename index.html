@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kalman Filter Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
+
+    <div class="bg-white rounded-xl shadow-lg p-8 w-full max-w-2xl">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-2">Kalman Filter Location Tracker</h1>
+        <p class="text-center text-gray-500 mb-6">Enter a series of location measurements to see the filter's estimation in real-time.</p>
+
+        <!-- Input Section -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div>
+                <label for="latitude" class="block text-sm font-medium text-gray-700">Latitude</label>
+                <input type="number" id="latitude" placeholder="e.g., 12.981234" step="any" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 p-2 border">
+            </div>
+            <div>
+                <label for="longitude" class="block text-sm font-medium text-gray-700">Longitude</label>
+                <input type="number" id="longitude" placeholder="e.g., 77.581234" step="any" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 p-2 border">
+            </div>
+            <div>
+                <label for="timestamp" class="block text-sm font-medium text-gray-700">Timestamp (ms)</label>
+                <input type="number" id="timestamp" placeholder="e.g., 1721721120000" step="1" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 p-2 border">
+            </div>
+        </div>
+        <button id="addMeasurementBtn" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-300">
+            Add Measurement
+        </button>
+
+        <!-- Results Display Section -->
+        <div class="mt-8">
+            <h2 class="text-xl font-bold text-gray-800 mb-4">Measurements</h2>
+            <div id="resultsTableContainer" class="overflow-x-auto rounded-lg shadow-sm">
+                <table class="min-w-full bg-white border-collapse">
+                    <thead>
+                        <tr class="bg-gray-200 text-gray-600 uppercase text-sm leading-normal">
+                            <th class="py-3 px-6 text-left">#</th>
+                            <th class="py-3 px-6 text-left">Raw Coordinates</th>
+                            <th class="py-3 px-6 text-left">Estimated Coordinates</th>
+                        </tr>
+                    </thead>
+                    <tbody id="measurementsBody" class="text-gray-600 text-sm font-light">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Final Location Section -->
+        <div id="finalLocationSection" class="mt-8 hidden">
+            <h2 class="text-xl font-bold text-gray-800 mb-2">Final Estimated Location</h2>
+            <p id="finalLocationCoords" class="text-gray-700 font-medium text-lg mb-2"></p>
+            <p id="finalLocationAddress" class="text-gray-500 italic"></p>
+        </div>
+        
+    </div>
+
+    <!-- Alert Modal (replaces alert()) -->
+    <div id="alertModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full hidden">
+      <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+        <div class="mt-3 text-center">
+          <h3 class="text-lg leading-6 font-medium text-gray-900" id="alertTitle"></h3>
+          <div class="mt-2 px-7 py-3">
+            <p class="text-sm text-gray-500" id="alertMessage"></p>
+          </div>
+          <div class="items-center px-4 py-3">
+            <button id="alertCloseBtn" class="px-4 py-2 bg-blue-500 text-white text-base font-medium rounded-md w-full shadow-sm hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-300">
+              OK
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+        // Kalman Filter Class in JavaScript
+        class KalmanFilter {
+            constructor(processVariance, measurementVariance, initialState) {
+                this.stateEstimate = new Float32Array(initialState);
+                this.P = new Float32Array([1000, 0, 0, 0, 0, 1000, 0, 0, 0, 0, 1000, 0, 0, 0, 0, 1000]); // 4x4
+                this.Q = new Float32Array(16); // 4x4
+                this.R = new Float32Array([measurementVariance, 0, 0, measurementVariance]); // 2x2
+                this.H = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0]); // 2x4
+
+                for (let i = 0; i < 4; i++) {
+                    this.Q[i * 4 + i] = processVariance;
+                }
+            }
+
+            predict(dt) {
+                const F = new Float32Array([1, 0, dt, 0, 0, 1, 0, dt, 0, 0, 1, 0, 0, 0, 0, 1]); // 4x4
+
+                // state_estimate = F @ state_estimate
+                const newStateEstimate = new Float32Array(4);
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        newStateEstimate[i] += F[i * 4 + j] * this.stateEstimate[j];
+                    }
+                }
+                this.stateEstimate = newStateEstimate;
+
+                // P = F @ P @ F.T + Q
+                const F_T = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, dt, 0, 1, 0, 0, dt, 0, 1]); // 4x4
+                const FP = new Float32Array(16);
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        for (let k = 0; k < 4; k++) {
+                            FP[i * 4 + j] += F[i * 4 + k] * this.P[k * 4 + j];
+                        }
+                    }
+                }
+                const FPF_T = new Float32Array(16);
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        for (let k = 0; k < 4; k++) {
+                            FPF_T[i * 4 + j] += FP[i * 4 + k] * F_T[k * 4 + j];
+                        }
+                    }
+                }
+                for (let i = 0; i < 16; i++) {
+                    this.P[i] = FPF_T[i] + this.Q[i];
+                }
+            }
+
+            update(measurement) {
+                // S = H @ P @ H.T + R
+                const H_T = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0]); // 4x2
+                const HP = new Float32Array(8); // 2x4
+                for (let i = 0; i < 2; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        for (let k = 0; k < 4; k++) {
+                            HP[i * 4 + j] += this.H[i * 4 + k] * this.P[k * 4 + j];
+                        }
+                    }
+                }
+                const HPH_T = new Float32Array(4); // 2x2
+                for (let i = 0; i < 2; i++) {
+                    for (let j = 0; j < 2; j++) {
+                        for (let k = 0; k < 4; k++) {
+                            HPH_T[i * 2 + j] += HP[i * 4 + k] * H_T[k * 2 + j];
+                        }
+                    }
+                }
+                const S = new Float32Array(4);
+                for (let i = 0; i < 4; i++) {
+                    S[i] = HPH_T[i] + this.R[i];
+                }
+
+                // K = P @ H.T @ S^-1
+                const invS = new Float32Array(4);
+                const detS = S[0] * S[3] - S[1] * S[2];
+                invS[0] = S[3] / detS;
+                invS[1] = -S[1] / detS;
+                invS[2] = -S[2] / detS;
+                invS[3] = S[0] / detS;
+                const PHT = new Float32Array(8);
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 2; j++) {
+                        for (let k = 0; k < 4; k++) {
+                            PHT[i * 2 + j] += this.P[i * 4 + k] * H_T[k * 2 + j];
+                        }
+                    }
+                }
+                const K = new Float32Array(8); // 4x2
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 2; j++) {
+                        for (let k = 0; k < 2; k++) {
+                            K[i * 2 + j] += PHT[i * 2 + k] * invS[k * 2 + j];
+                        }
+                    }
+                }
+
+                // state_estimate = state_estimate + K @ (measurement - H @ state_estimate)
+                const innovation = new Float32Array(2);
+                innovation[0] = measurement[0] - this.stateEstimate[0];
+                innovation[1] = measurement[1] - this.stateEstimate[1];
+                const K_innovation = new Float32Array(4);
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 2; j++) {
+                        K_innovation[i] += K[i * 2 + j] * innovation[j];
+                    }
+                }
+                for (let i = 0; i < 4; i++) {
+                    this.stateEstimate[i] += K_innovation[i];
+                }
+
+                // P = (I - K @ H) @ P
+                const I = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+                const KH = new Float32Array(16);
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        for (let k = 0; k < 2; k++) {
+                            KH[i * 4 + j] += K[i * 2 + k] * this.H[k * 4 + j];
+                        }
+                    }
+                }
+                const I_KH = new Float32Array(16);
+                for (let i = 0; i < 16; i++) {
+                    I_KH[i] = I[i] - KH[i];
+                }
+                const newP = new Float32Array(16);
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        for (let k = 0; k < 4; k++) {
+                            newP[i * 4 + j] += I_KH[i * 4 + k] * this.P[k * 4 + j];
+                        }
+                    }
+                }
+                this.P = newP;
+            }
+
+            get_location() {
+                return [this.stateEstimate[0], this.stateEstimate[1]];
+            }
+        }
+
+        // UI and Event Handling
+        let kf = null;
+        let lastTimestamp = null;
+        let measurementsCount = 0;
+
+        const addMeasurementBtn = document.getElementById('addMeasurementBtn');
+        const latitudeInput = document.getElementById('latitude');
+        const longitudeInput = document.getElementById('longitude');
+        const timestampInput = document.getElementById('timestamp');
+        const measurementsBody = document.getElementById('measurementsBody');
+        const finalLocationSection = document.getElementById('finalLocationSection');
+        const finalLocationCoords = document.getElementById('finalLocationCoords');
+        const finalLocationAddress = document.getElementById('finalLocationAddress');
+        const alertModal = document.getElementById('alertModal');
+        const alertTitle = document.getElementById('alertTitle');
+        const alertMessage = document.getElementById('alertMessage');
+        const alertCloseBtn = document.getElementById('alertCloseBtn');
+
+        function showAlert(title, message) {
+          alertTitle.textContent = title;
+          alertMessage.textContent = message;
+          alertModal.classList.remove('hidden');
+        }
+        alertCloseBtn.addEventListener('click', () => {
+          alertModal.classList.add('hidden');
+        });
+
+        async function geocodeCoordinates(lat, lon) {
+            const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`;
+            try {
+                const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error('API request failed');
+                }
+                const data = await response.json();
+                if (data.display_name) {
+                    return data.display_name;
+                } else {
+                    return 'Address not found for these coordinates.';
+                }
+            } catch (error) {
+                console.error("Geocoding API error:", error);
+                return `Failed to retrieve address: ${error.message}`;
+            }
+        }
+
+        addMeasurementBtn.addEventListener('click', async () => {
+            const latitude = parseFloat(latitudeInput.value);
+            const longitude = parseFloat(longitudeInput.value);
+            const timestamp = parseInt(timestampInput.value);
+
+            if (isNaN(latitude) || isNaN(longitude) || isNaN(timestamp)) {
+                showAlert("Invalid Input", "Please enter valid numbers for all fields.");
+                return;
+            }
+
+            measurementsCount++;
+
+            let estimatedLocation;
+            if (measurementsCount === 1) {
+                kf = new KalmanFilter(0.1, 10.0, [longitude, latitude, 0, 0]);
+                lastTimestamp = timestamp / 1000.0;
+                estimatedLocation = [longitude, latitude];
+            } else {
+                const currentTimestamp = timestamp / 1000.0;
+                const dt = currentTimestamp - lastTimestamp;
+                
+                if (dt > 0) {
+                    kf.predict(dt);
+                    const measuredLocation = [longitude, latitude];
+                    kf.update(measuredLocation);
+                    estimatedLocation = kf.get_location();
+                    lastTimestamp = currentTimestamp;
+                } else {
+                    showAlert("Invalid Timestamp", "Timestamp must be greater than the previous one.");
+                    measurementsCount--;
+                    return;
+                }
+            }
+
+            const newRow = document.createElement('tr');
+            newRow.className = "border-b border-gray-200 hover:bg-gray-100";
+            newRow.innerHTML = `
+                <td class="py-3 px-6 text-left whitespace-nowrap">${measurementsCount}</td>
+                <td class="py-3 px-6 text-left whitespace-nowrap">(${longitude.toFixed(6)}, ${latitude.toFixed(6)})</td>
+                <td class="py-3 px-6 text-left whitespace-nowrap">(${estimatedLocation[0].toFixed(6)}, ${estimatedLocation[1].toFixed(6)})</td>
+            `;
+            measurementsBody.appendChild(newRow);
+
+            if (measurementsCount >= 3) {
+                const finalLat = estimatedLocation[1];
+                const finalLon = estimatedLocation[0];
+                finalLocationCoords.textContent = `Estimated Coordinates: (${finalLon.toFixed(6)}, ${finalLat.toFixed(6)})`;
+                
+                finalLocationAddress.textContent = "Fetching address...";
+                finalLocationSection.classList.remove('hidden');
+
+                const address = await geocodeCoordinates(finalLat, finalLon);
+                finalLocationAddress.textContent = `Address: ${address}`;
+            }
+            
+            // Clear input fields
+            latitudeInput.value = '';
+            longitudeInput.value = '';
+            timestampInput.value = '';
+        });
+    </script>
+
+</body>
+</html>
