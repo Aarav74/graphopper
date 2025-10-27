@@ -1,5 +1,36 @@
-fastapi
-uvicorn
-numpy
-requests
-pydantic
+# FastAPI & Web Framework
+fastapi==0.104.1
+uvicorn==0.24.0
+python-multipart==0.0.6
+
+# Data Processing & Mathematics
+numpy==1.24.3
+pandas==2.0.3
+scipy==1.11.3
+
+# HTTP Requests
+requests==2.31.0
+aiohttp==3.8.5
+
+# Geospatial & Mapping
+geopy==2.3.0
+shapely==2.0.1
+pyproj==3.6.0
+
+# Data Validation
+pydantic==2.5.0
+pydantic-core==2.14.0
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2023.3
+typing-extensions==4.8.0
+
+# Optional: For enhanced performance
+python-rapidjson==1.10
+orjson==3.9.10
+
+# Development & Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.25.2
