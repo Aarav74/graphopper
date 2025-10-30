@@ -1,805 +1,698 @@
 import numpy as np
-import requests
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
-from typing import List, Tuple, Dict, Any
-import urllib.parse
-from collections import defaultdict, deque
 import math
-import heapq
+import requests
+from typing import List, Tuple, Dict, Any, Optional #to define the variable type
+from scipy.optimize import minimize #for optional algorithms
+from scipy.spatial import KDTree  #to handle saptial data
+import json
 
-app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-class KalmanFilter:
-    def __init__(self, process_variance, measurement_variance, initial_state):
-        self.state_estimate = np.array(initial_state, dtype=np.float64)
-        self.P = np.eye(4) * 1000
-        self.Q = np.eye(4) * process_variance
-        self.R = np.eye(2) * measurement_variance
-        self.H = np.array([[1, 0, 0, 0], [0, 1, 0, 0]], dtype=np.float64)
-
-    def predict(self, dt):
-        F = np.array([[1, 0, dt, 0], [0, 1, 0, dt], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=np.float64)
-        self.state_estimate = F @ self.state_estimate
-        self.P = F @ self.P @ F.T + self.Q
-
-    def update(self, measurement):
-        S = self.H @ self.P @ self.H.T + self.R
-        K = self.P @ self.H.T @ np.linalg.inv(S)
-        self.state_estimate = self.state_estimate + K @ (measurement - self.H @ self.state_estimate)
-        I = np.eye(4)
-        self.P = (I - K @ self.H) @ self.P
-
-    def get_location(self):
-        return self.state_estimate[0], self.state_estimate[1]
-
-class RoadNetworkGraph:
+class HighPrecisionESIMTracker:
     def __init__(self):
-        self.graph = defaultdict(list)
-        self.node_coords = {}
-        self.road_segments = {}
-        
-    def add_road(self, road_id: int, coords: List[Tuple[float, float]], road_info: Dict):
-        """Add a road to the graph"""
-        for i in range(len(coords) - 1):
-            node1 = coords[i]
-            node2 = coords[i + 1]
-            
-            # Create node IDs
-            node1_id = f"{node1[0]:.6f}_{node1[1]:.6f}"
-            node2_id = f"{node2[0]:.6f}_{node2[1]:.6f}"
-            
-            # Store coordinates
-            self.node_coords[node1_id] = node1
-            self.node_coords[node2_id] = node2
-            
-            # Calculate distance
-            distance = self.haversine_distance(node1, node2)
-            
-            # Add bidirectional edges
-            self.graph[node1_id].append((node2_id, distance, road_id))
-            self.graph[node2_id].append((node1_id, distance, road_id))
-            
-            # Store road segment info
-            seg_id = f"{road_id}_{i}"
-            self.road_segments[seg_id] = {
-                'start': node1,
-                'end': node2,
-                'road_info': road_info,
-                'distance': distance
-            }
+        #to initialize the cell tower database
+        self.cell_tower_database = self.initialize_tower_database()
+        #to initialize signal propagation model
+        self.signal_propagation_models = self.initialize_propagation_models()
     
+    #cell tower database setup
+    def initialize_tower_database(self) -> Dict:
+        """Initialize a comprehensive database of cell tower locations"""
+        return {
+            # Delhi area cell towers - expanded with more realistic coverage
+            '404_84_12345678': {'lat': 28.632400, 'lon': 77.218800, 'type': '4G', 'height': 35},
+            '404_84_12345679': {'lat': 28.631500, 'lon': 77.217500, 'type': '4G', 'height': 32},
+            '404_84_12345680': {'lat': 28.633500, 'lon': 77.220200, 'type': '4G', 'height': 40},
+            '404_84_12345681': {'lat': 28.630800, 'lon': 77.219500, 'type': '4G', 'height': 38},
+            '404_84_12345682': {'lat': 28.634200, 'lon': 77.217000, 'type': '4G', 'height': 45},
+            '404_07_12345683': {'lat': 28.631200, 'lon': 77.221000, 'type': '4G', 'height': 42},
+            '404_07_12345684': {'lat': 28.633800, 'lon': 77.216500, 'type': '4G', 'height': 36},
+            '404_07_12345685': {'lat': 28.630500, 'lon': 77.218000, 'type': '4G', 'height': 39},
+            '404_07_12345686': {'lat': 28.632800, 'lon': 77.222000, 'type': '4G', 'height': 44},
+        }
+    
+    def initialize_propagation_models(self) -> Dict:
+        """Initialize signal propagation models for different environments"""
+        return {
+            'dense_urban': {'path_loss_exp': 3.5, 'shadow_std': 12},
+            'urban': {'path_loss_exp': 3.2, 'shadow_std': 10},
+            'suburban': {'path_loss_exp': 2.8, 'shadow_std': 8},
+            'rural': {'path_loss_exponent': 2.3, 'shadow_std': 6},
+            'free_space': {'path_loss_exp': 2.0, 'shadow_std': 3}
+        }
+    
+    #to calculate the distance
     def haversine_distance(self, point1: Tuple[float, float], point2: Tuple[float, float]) -> float:
-        """Calculate Haversine distance between two points in meters"""
-        lat1, lon1 = point1
-        lat2, lon2 = point2
+        """High precision Haversine distance calculation"""
+        lat1, lon1 = math.radians(point1[0]), math.radians(point1[1])
+        lat2, lon2 = math.radians(point2[0]), math.radians(point2[1])
         
-        R = 6371000  # Earth radius in meters
-        dlat = math.radians(lat2 - lat1)
-        dlon = math.radians(lon2 - lon1)
-        a = (math.sin(dlat/2) * math.sin(dlat/2) + 
-             math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * 
-             math.sin(dlon/2) * math.sin(dlon/2))
+        R = 6371000.0  # Earth radius in meters
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        
+        #haversine formula to account the earth's curvature
+        a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
         c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+        
         return R * c
     
-    def find_nearest_node(self, point: Tuple[float, float]) -> Tuple[str, float]:
-        """Find the nearest graph node to a point"""
-        min_distance = float('inf')
-        nearest_node = None
+    def signal_to_distance(self, signal_strength: float, frequency: float = 1800, 
+                         environment: str = "urban", tower_height: float = 30) -> Tuple[float, float]:
+        """
+        Convert signal strength to distance with confidence interval
+        Returns: (distance_meters, confidence_interval)
+        """
+        # Reference signal strength at 1 km under ideal conditions
+        if frequency <= 900:
+            ref_signal_1km = -75  # dBm at 1 km for 900MHz
+        elif frequency <= 1800:
+            ref_signal_1km = -80  # dBm at 1 km for 1800MHz
+        else:
+            ref_signal_1km = -85  # dBm at 1 km for 2100MHz+
         
-        for node_id, node_coord in self.node_coords.items():
-            distance = self.haversine_distance(point, node_coord)
-            if distance < min_distance:
-                min_distance = distance
-                nearest_node = node_id
+        # Path loss exponent from propagation model
+        path_loss_exp = self.signal_propagation_models[environment]['path_loss_exp']
+        shadow_std = self.signal_propagation_models[environment]['shadow_std']
         
-        return nearest_node, min_distance
-    
-    def dijkstra_shortest_path(self, start_node: str, end_node: str) -> Tuple[List[str], float]:
-        """Find shortest path using Dijkstra's algorithm"""
-        distances = {node: float('inf') for node in self.graph}
-        previous = {node: None for node in self.graph}
-        distances[start_node] = 0
+        # Calculate distance using log-distance path loss model
+        path_loss = ref_signal_1km - signal_strength
+        distance_km = 10 ** (path_loss / (10 * path_loss_exp))
+        distance_meters = distance_km * 1000
         
-        pq = [(0, start_node)]
+        # Adjust for tower height (higher towers have better coverage)
+        height_factor = max(0.8, min(1.5, tower_height / 35.0))  # More realistic bounds
+        distance_meters *= height_factor
         
-        while pq:
-            current_dist, current_node = heapq.heappop(pq)
+        # Calculate confidence interval based on environment and signal quality
+        base_confidence = 0.25  # 25% base uncertainty
+        if signal_strength > -70:  # Strong signal
+            base_confidence = 0.15
+        elif signal_strength < -90:  # Weak signal
+            base_confidence = 0.4
             
-            if current_node == end_node:
-                break
-                
-            if current_dist > distances[current_node]:
-                continue
-                
-            for neighbor, weight, road_id in self.graph[current_node]:
-                distance = current_dist + weight
-                
-                if distance < distances[neighbor]:
-                    distances[neighbor] = distance
-                    previous[neighbor] = (current_node, road_id)
-                    heapq.heappush(pq, (distance, neighbor))
+        confidence = distance_meters * base_confidence
         
-        # Reconstruct path
-        path = []
-        current = end_node
-        road_sequence = []
-        
-        while current is not None:
-            path.append(current)
-            if previous[current] is not None:
-                prev_node, road_id = previous[current]
-                road_sequence.append(road_id)
-            current = previous[current][0] if previous[current] else None
-        
-        path.reverse()
-        road_sequence.reverse()
-        
-        return path, distances[end_node], road_sequence
+        return max(50, distance_meters), confidence  # Minimum 50m distance
     
-    def get_path_coordinates(self, path_nodes: List[str]) -> List[Tuple[float, float]]:
-        """Convert node IDs back to coordinates"""
-        return [self.node_coords[node_id] for node_id in path_nodes]
-
-class CompleteRoadTracker:
-    def __init__(self):
-        self.road_graph = RoadNetworkGraph()
+    #main triangulation method
+    def advanced_triangulation(self, tower_measurements: List[Dict]) -> Dict[str, Any]:
+        """
+        Advanced triangulation using multiple algorithms for maximum accuracy
+        """
+        print(f"Starting triangulation with {len(tower_measurements)} measurements...")
         
-    def fetch_roads_in_area(self, points: List[Tuple[float, float]], padding: float = 0.02) -> List[Dict]:
-        """Fetch all roads in the bounding box around the points"""
-        if not points:
-            return []
-            
-        # Calculate bounding box
-        lats = [p[0] for p in points]
-        lons = [p[1] for p in points]
+        # Step 1: Prepare tower data with distances
+        towers = []
+        valid_towers_count = 0
         
-        min_lat, max_lat = min(lats) - padding, max(lats) + padding
-        min_lon, max_lon = min(lons) - padding, max(lons) + padding
+        for meas in tower_measurements:
+            #create tower ID
+            tower_id = f"{meas['mcc']}_{meas['mnc']}_{meas['cell_id']}"
+            #check if the tower is in database
+            if tower_id in self.cell_tower_database:
+                tower_data = self.cell_tower_database[tower_id]
+                #calculate distance using signal strength
+                distance, confidence = self.signal_to_distance(
+                    meas['signal_strength'],
+                    meas.get('frequency', 1800),
+                    meas.get('environment', 'urban'),
+                    tower_data['height']
+                )
+                
+                #store tower information
+                towers.append({
+                    'id': tower_id,
+                    'coordinates': (tower_data['lat'], tower_data['lon']),
+                    'distance': distance,
+                    'confidence': confidence,
+                    'signal_strength': meas['signal_strength'],
+                    'timing_advance': meas.get('timing_advance'),
+                    'weight': 1.0 / (confidence + 1e-6)  # Higher confidence = higher weight
+                })
+                valid_towers_count += 1
+                print(f"  Found tower {tower_id} at {tower_data['lat']:.6f}, {tower_data['lon']:.6f}")
+                print(f"    Signal: {meas['signal_strength']}dBm -> Distance: {distance:.1f}m")
         
+        print(f"Valid towers found: {valid_towers_count}")
+        
+        #check if there is enough towers
+        if len(towers) < 3:
+            print(f"Warning: Only {len(towers)} valid towers found. Using fallback method.")
+            return self.enhanced_fallback_triangulation(towers, tower_measurements)
+        
+        # Step 2: Use multiple triangulation methods
+        results = {}
+        
+        # Method 1: Weighted Least Squares
+        print("Running Weighted Least Squares...")
+        results['weighted_least_squares'] = self.weighted_least_squares(towers)
+        
+        # Method 2: Circular Intersection
+        print("Running Circular Intersection...")
+        results['circular_intersection'] = self.circular_intersection(towers)
+        
+        # Method 3: Centroid with weights
+        print("Running Weighted Centroid...")
+        results['weighted_centroid'] = self.weighted_centroid(towers)
+        
+        # Method 4: Non-linear optimization
+        print("Running Non-linear Optimization...")
+        results['non_linear_opt'] = self.non_linear_optimization(towers)
+        
+        # Step 3: Combine results using confidence-based weighting
+        final_result = self.combine_triangulation_results(results, towers)
+        
+        print(f"Triangulation completed. Final accuracy: {final_result['accuracy_meters']:.1f}m")
+        return final_result
+    
+    def weighted_least_squares(self, towers: List[Dict]) -> Dict[str, Any]:
+        """Weighted least squares triangulation"""
         try:
-            # Query Overpass API for roads in the bounding box
-            overpass_query = f"""
-            [out:json][timeout:45];
-            (
-              way({min_lat},{min_lon},{max_lat},{max_lon})["highway"~"motorway|trunk|primary|secondary|tertiary|unclassified|residential|service"];
-            );
-            out geom;
-            """
+            # Initial guess (weighted centroid)
+            lat_sum, lon_sum, total_weight = 0, 0, 0
+            for tower in towers:
+                weight = tower['weight']
+                lat_sum += tower['coordinates'][0] * weight
+                lon_sum += tower['coordinates'][1] * weight
+                total_weight += weight
             
-            encoded_query = urllib.parse.quote(overpass_query)
-            url = f"http://overpass-api.de/api/interpreter?data={encoded_query}"
+            #for starting point optimization
+            x0 = np.array([lat_sum / total_weight, lon_sum / total_weight])
             
-            response = requests.get(url, timeout=45)
-            response.raise_for_status()
-            data = response.json()
+            def objective_function(x):
+                total_error = 0
+                lat, lon = x #current position which is being tested
+                
+                for tower in towers:
+                    #calculate distance from tower to destination
+                    tower_lat, tower_lon = tower['coordinates']
+                    calculated_distance = self.haversine_distance(
+                        (lat, lon), (tower_lat, tower_lon)
+                    )
+                    #squared error between the calculated and estimated distance
+                    error = (calculated_distance - tower['distance']) ** 2
+                    #weight according to the weight
+                    total_error += error * tower['weight']
+                
+                return total_error
             
-            roads = []
-            for element in data.get('elements', []):
-                if element['type'] == 'way' and 'geometry' in element:
-                    road_coords = [(node['lat'], node['lon']) for node in element['geometry']]
-                    road_info = {
-                        'id': element['id'],
-                        'coords': road_coords,
-                        'tags': element.get('tags', {}),
-                        'type': element.get('tags', {}).get('highway', 'road'),
-                        'name': element.get('tags', {}).get('name', 'Unnamed Road')
-                    }
-                    roads.append(road_info)
+            # Constrain to reasonable area around towers
+            lat_coords = [t['coordinates'][0] for t in towers]
+            lon_coords = [t['coordinates'][1] for t in towers]
             
-            return roads
+            bounds = [
+                (min(lat_coords) - 0.005, max(lat_coords) + 0.005),  # ~500m buffer
+                (min(lon_coords) - 0.005, max(lon_coords) + 0.005)
+            ]
+            #run optimization for minimum error
+            result = minimize(objective_function, x0, method='L-BFGS-B', bounds=bounds,
+                            options={'maxiter': 100, 'ftol': 1e-6})
+            
+            if result.success:
+                estimated_location = tuple(result.x)
+                accuracy = self.calculate_accuracy_metrics(estimated_location, towers)
+                return {
+                    'location': estimated_location,
+                    'accuracy': accuracy,
+                    'method': 'weighted_least_squares'
+                }
+            else:
+                print(f"WLS Optimization failed: {result.message}")
+        except Exception as e:
+            print(f"WLS Error: {e}")
+        
+        return {'location': None, 'accuracy': float('inf'), 'method': 'weighted_least_squares'}
+    
+    def circular_intersection(self, towers: List[Dict]) -> Dict[str, Any]:
+        """Circular intersection method for triangulation"""
+        try:
+            # Try multiple combinations of towers for better results
+            best_result = {'location': None, 'accuracy': float('inf'), 'method': 'circular_intersection'}
+            
+            #try every possibel connection of three towers
+            for i in range(len(towers)):
+                for j in range(i+1, len(towers)):
+                    for k in range(j+1, len(towers)):
+                        t1, t2, t3 = towers[i], towers[j], towers[k]
+                        
+                        # Get circle intersections
+                        intersections = self.three_circle_intersection(t1, t2, t3)
+                        
+                        if intersections:
+                            # Choose the intersection that minimizes total error
+                            best_intersection = None
+                            min_error = float('inf')
+                            
+                            for point in intersections:
+                                error = 0
+                                for tower in towers:
+                                    calculated_dist = self.haversine_distance(point, tower['coordinates'])
+                                    error += abs(calculated_dist - tower['distance']) * tower['weight']
+                                
+                                if error < min_error:
+                                    min_error = error
+                                    best_intersection = point
+                            
+                            if best_intersection:
+                                accuracy = self.calculate_accuracy_metrics(best_intersection, towers)
+                                if accuracy < best_result['accuracy']:
+                                    best_result = {
+                                        'location': best_intersection,
+                                        'accuracy': accuracy,
+                                        'method': 'circular_intersection'
+                                    }
+            
+            if best_result['location'] is not None:
+                return best_result
+                
+        except Exception as e:
+            print(f"Circular Intersection Error: {e}")
+        
+        return {'location': None, 'accuracy': float('inf'), 'method': 'circular_intersection'}
+    
+    def three_circle_intersection(self, t1: Dict, t2: Dict, t3: Dict) -> List[Tuple[float, float]]:
+        """Calculate intersection points of three circles"""
+        try:
+            #exrtract coordinates 
+            x1, y1 = t1['coordinates'][1], t1['coordinates'][0]  # lon, lat
+            x2, y2 = t2['coordinates'][1], t2['coordinates'][0]
+            x3, y3 = t3['coordinates'][1], t3['coordinates'][0]
+            
+            # Convert distances to degrees (more accurate conversion)
+            r1 = t1['distance'] / 111320  # 1 degree ≈ 111.32km at equator
+            r2 = t2['distance'] / 111320
+            r3 = t3['distance'] / 111320
+            
+            # Calculate intersection of first two circles
+            dx = x2 - x1
+            dy = y2 - y1
+            d = math.sqrt(dx*dx + dy*dy) # Distance between centers
+            
+            #check if circles intersect or not
+            if d > (r1 + r2) or d < abs(r1 - r2):
+                return []  # No intersection
+            
+            # Find intersection points
+            a = (r1*r1 - r2*r2 + d*d) / (2 * d)
+            h = math.sqrt(r1*r1 - a*a)
+            
+            #center point between intersections
+            x0 = x1 + a * dx / d
+            y0 = y1 + a * dy / d
+            
+            #center point to offset
+            rx = -dy * (h / d)
+            ry = dx * (h / d)
+            
+            #possible intersection  points
+            points = [
+                (y0 + ry, x0 + rx),  # (lat, lon)
+                (y0 - ry, x0 - rx)   # (lat, lon)
+            ]
+            
+            # Filter points that are reasonable for all towers
+            valid_points = []
+            for point in points:
+                total_error = 0
+                valid = True
+                
+                for tower in [t1, t2, t3]:
+                    dist_to_tower = self.haversine_distance(point, (tower['coordinates'][0], tower['coordinates'][1]))
+                    error_ratio = abs(dist_to_tower - tower['distance']) / tower['distance']
+                    if error_ratio > 0.8:  # Allow 80% error margin
+                        valid = False
+                        break
+                    total_error += error_ratio
+                
+                if valid and total_error < 1.5:  # Reasonable total error
+                    valid_points.append(point)
+            
+            return valid_points
             
         except Exception as e:
-            print(f"Error fetching roads: {e}")
+            print(f"Circle intersection error: {e}")
             return []
     
-    def build_road_network(self, roads: List[Dict]):
-        """Build a graph from the road data"""
-        for road in roads:
-            self.road_graph.add_road(road['id'], road['coords'], road)
+    def weighted_centroid(self, towers: List[Dict]) -> Dict[str, Any]:
+        """Weighted centroid triangulation"""
+        try:
+            lat_sum, lon_sum, total_weight = 0, 0, 0
+            
+            for tower in towers:
+                # Weight based on signal strength and confidence
+                weight = tower['weight']
+                lat_sum += tower['coordinates'][0] * weight
+                lon_sum += tower['coordinates'][1] * weight
+                total_weight += weight
+            
+            if total_weight > 0:
+                #calculate weighted average
+                estimated_location = (lat_sum / total_weight, lon_sum / total_weight)
+                accuracy = self.calculate_accuracy_metrics(estimated_location, towers)
+                return {
+                    'location': estimated_location,
+                    'accuracy': accuracy,
+                    'method': 'weighted_centroid'
+                }
+        except Exception as e:
+            print(f"Centroid Error: {e}")
+        
+        return {'location': None, 'accuracy': float('inf'), 'method': 'weighted_centroid'}
     
-    def find_complete_road_path(self, measurements: List[Tuple[float, float]]) -> Dict[str, Any]:
-        """Find complete road path from first measurement (source) to last measurement (destination)"""
-        if len(measurements) < 2:
-            return {'error': 'Need at least 2 measurements to determine source and destination'}
+    def non_linear_optimization(self, towers: List[Dict]) -> Dict[str, Any]:
+        """Non-linear optimization for triangulation"""
+        try:
+            # Initial guess from weighted centroid
+            lat_sum, lon_sum, total_weight = 0, 0, 0
+            for tower in towers:
+                weight = tower['weight']
+                lat_sum += tower['coordinates'][0] * weight
+                lon_sum += tower['coordinates'][1] * weight
+                total_weight += weight
+            
+            x0 = np.array([lat_sum / total_weight, lon_sum / total_weight])
+            
+            def objective_function(x):
+                total_error = 0
+                lat, lon = x
+                
+                for tower in towers:
+                    calculated_distance = self.haversine_distance(
+                        (lat, lon), tower['coordinates']
+                    )
+                    # use log error fro better numerical stability
+                    error = math.log1p(abs(calculated_distance - tower['distance']))
+                    total_error += error * tower['weight']
+                
+                return total_error
+            
+            # Constrain search area
+            lat_coords = [t['coordinates'][0] for t in towers]
+            lon_coords = [t['coordinates'][1] for t in towers]
+            
+            bounds = [
+                (min(lat_coords) - 0.005, max(lat_coords) + 0.005),
+                (min(lon_coords) - 0.005, max(lon_coords) + 0.005)
+            ]
+            
+            #run optimization
+            result = minimize(objective_function, x0, method='Nelder-Mead', bounds=bounds,
+                            options={'maxiter': 200, 'xatol': 1e-8, 'fatol': 1e-8})
+            
+            if result.success:
+                estimated_location = tuple(result.x)
+                accuracy = self.calculate_accuracy_metrics(estimated_location, towers)
+                return {
+                    'location': estimated_location,
+                    'accuracy': accuracy,
+                    'method': 'non_linear_opt'
+                }
+        except Exception as e:
+            print(f"Non-linear optimization error: {e}")
         
-        # First measurement is source, last measurement is destination
-        source_point = measurements[0]
-        destination_point = measurements[-1]
-        intermediate_points = measurements[1:-1]  # Points between source and destination
+        return {'location': None, 'accuracy': float('inf'), 'method': 'non_linear_opt'}
+    
+    def combine_triangulation_results(self, results: Dict, towers: List[Dict]) -> Dict[str, Any]:
+        """Combine results from multiple triangulation methods"""
+        valid_results = []
         
-        print(f"Source: {source_point}, Destination: {destination_point}")
-        print(f"Intermediate points: {len(intermediate_points)}")
+        #do check valid results
+        for method, result in results.items():
+            if result['location'] is not None and result['accuracy'] < float('inf'):
+                valid_results.append(result)
+                print(f"  {method}: Location {result['location']}, Accuracy: {result['accuracy']:.1f}m")
         
-        # Fetch roads in the area
-        all_points = measurements
-        roads = self.fetch_roads_in_area(all_points, padding=0.03)
+        #use fallback if no valid results
+        if not valid_results:
+            print("All triangulation methods failed. Using enhanced fallback.")
+            return self.enhanced_fallback_triangulation(towers, [])
         
-        if not roads:
-            return {'error': 'No roads found in the area'}
+        # Weight results by their accuracy (lower accuracy value = better)
+        total_weight = 0
+        weighted_lat, weighted_lon = 0, 0
         
-        print(f"Found {len(roads)} roads in the area")
+        for result in valid_results:
+            weight = 1.0 / (result['accuracy'] + 1e-6) 
+            weighted_lat += result['location'][0] * weight
+            weighted_lon += result['location'][1] * weight
+            total_weight += weight
         
-        # Build road network graph
-        self.build_road_network(roads)
+        if total_weight > 0:
+            #weighted average of every successful result
+            final_location = (weighted_lat / total_weight, weighted_lon / total_weight)
+            final_accuracy = self.calculate_accuracy_metrics(final_location, towers)
+            
+            return {
+                'estimated_location': final_location,
+                'accuracy_meters': final_accuracy,
+                'number_of_towers': len(towers),
+                'methods_used': [r['method'] for r in valid_results],
+                'confidence': self.calculate_confidence(final_accuracy, len(towers)),
+                'tower_details': [
+                    {
+                        'tower_id': t['id'],
+                        'distance_estimated': t['distance'],
+                        'signal_strength': t['signal_strength']
+                    } for t in towers
+                ]
+            }
+        else:
+            return self.enhanced_fallback_triangulation(towers, [])
+    
+    def enhanced_fallback_triangulation(self, towers: List[Dict], tower_measurements: List[Dict]) -> Dict[str, Any]:
+        """Enhanced fallback method with distance calculation"""
+        enhanced_towers = []
         
-        # Find nearest nodes to source and destination points
-        source_node, source_dist = self.road_graph.find_nearest_node(source_point)
-        destination_node, dest_dist = self.road_graph.find_nearest_node(destination_point)
+        for tower in towers:
+            # Calculate distance for fallback method too
+            distance, confidence = self.signal_to_distance(
+                tower['signal_strength'], 1800, 'urban', 35
+            )
+            enhanced_towers.append({
+                'coordinates': tower['coordinates'],
+                'distance': distance,
+                'weight': 1.0 / (confidence + 1e-6)
+            })
         
-        if not source_node or not destination_node:
-            return {'error': 'Could not find road network nodes near source/destination points'}
+        if not enhanced_towers:
+            # If no towers with distance, use simple centroid
+            all_towers = []
+            for meas in tower_measurements:
+                tower_id = f"{meas['mcc']}_{meas['mnc']}_{meas['cell_id']}"
+                if tower_id in self.cell_tower_database:
+                    tower_data = self.cell_tower_database[tower_id]
+                    all_towers.append({
+                        'coordinates': (tower_data['lat'], tower_data['lon']),
+                        'signal_strength': meas['signal_strength']
+                    })
+            
+            if not all_towers:
+                return {'error': 'No valid tower data available'}
+            
+            # Simple centroid
+            lat_sum = sum(t['coordinates'][0] for t in all_towers)
+            lon_sum = sum(t['coordinates'][1] for t in all_towers)
+            estimated_location = (lat_sum / len(all_towers), lon_sum / len(all_towers))
+            
+            return {
+                'estimated_location': estimated_location,
+                'accuracy_meters': 1500,  # High uncertainty for fallback
+                'number_of_towers': len(all_towers),
+                'methods_used': ['fallback_centroid'],
+                'confidence': 'low',
+                'tower_details': []
+            }
         
-        print(f"Source node distance: {source_dist:.1f}m, Destination node distance: {dest_dist:.1f}m")
+        # Use weighted centroid with calculated distances
+        return self.weighted_centroid(enhanced_towers)
+    
+    def calculate_accuracy_metrics(self, location: Tuple[float, float], towers: List[Dict]) -> float:
+        """Calculate accuracy metrics for estimated location"""
+        errors = []
         
-        # Find shortest path
-        path_nodes, total_distance, road_sequence = self.road_graph.dijkstra_shortest_path(source_node, destination_node)
-        path_coords = self.road_graph.get_path_coordinates(path_nodes)
+        for tower in towers:
+            #Estimated location se tower tak ki actual distance 
+            calculated_distance = self.haversine_distance(location, tower['coordinates'])
+            #error between the calculated and estimated distance
+            error = abs(calculated_distance - tower['distance'])
+            errors.append(error)
         
-        print(f"Found path with {len(path_nodes)} nodes, total distance: {total_distance:.1f}m")
+        # Use RMS(Root Mean Square) error as accuracy metric
+        if errors:
+            rms_error = math.sqrt(sum(e**2 for e in errors) / len(errors))
+        else:
+            rms_error = 1000  # Default high error
         
-        # Find which roads are used in the path
-        used_roads = {}
-        for road_id in set(road_sequence):
-            road = next((r for r in roads if r['id'] == road_id), None)
-            if road:
-                used_roads[road_id] = road
+        # Adjust based on number of towers and geometry
+        geometry_factor = self.calculate_geometry_factor(towers)
         
-        # Project all measurements to the path
-        projected_measurements = []
-        for i, measurement in enumerate(measurements):
-            nearest_node, dist = self.road_graph.find_nearest_node(measurement)
-            if nearest_node:
-                projected_point = self.road_graph.node_coords[nearest_node]
-                point_type = "source" if i == 0 else "destination" if i == len(measurements)-1 else f"point_{i}"
-                projected_measurements.append({
-                    'original': measurement,
-                    'projected': projected_point,
-                    'distance': dist,
-                    'type': point_type,
-                    'index': i
-                })
+        return max(10, rms_error * geometry_factor)  # Minimum 10m accuracy
+    
+    def calculate_geometry_factor(self, towers: List[Dict]) -> float:
+        """Calculate geometry dilution of precision factor"""
+        if len(towers) < 3:
+            return 2.5  # if tower is less than 3 Poor geometry
         
-        return {
-            'complete_path': path_coords,
-            'total_distance': total_distance,
-            'used_roads': used_roads,
-            'path_nodes': len(path_nodes),
-            'projected_measurements': projected_measurements,
-            'source_point': source_point,
-            'destination_point': destination_point,
-            'source_point_projected': self.road_graph.node_coords[source_node],
-            'destination_point_projected': self.road_graph.node_coords[destination_node],
-            'all_roads_in_area': roads,
-            'intermediate_points_count': len(intermediate_points)
+        # Calculate area covered by towers
+        lats = [t['coordinates'][0] for t in towers]
+        lons = [t['coordinates'][1] for t in towers]
+        
+        lat_span = max(lats) - min(lats)
+        lon_span = max(lons) - min(lons)
+        
+        area = lat_span * lon_span
+        
+        if area < 0.00005:  # Very small area (towers too close)
+            return 2.0
+        elif area < 0.0002:  # Small area
+            return 1.5
+        elif area < 0.001:  # Medium area
+            return 1.2
+        else:  # Good spread
+            return 1.0
+    
+    def calculate_confidence(self, accuracy: float, num_towers: int) -> str:
+        """Calculate confidence level based on accuracy and tower count"""
+        if accuracy < 25 and num_towers >= 4:
+            return 'very_high'
+        elif accuracy < 50 and num_towers >= 3:
+            return 'high'
+        elif accuracy < 100 and num_towers >= 2:
+            return 'medium'
+        elif accuracy < 200:
+            return 'low'
+        else:
+            return 'very_low'
+    
+    def enhance_with_gps_fusion(self, esim_location: Dict, gps_locations: List[Tuple]) -> Dict:
+        """Fuse ESIM location with GPS data for maximum accuracy"""
+        if not gps_locations:
+            return esim_location
+        
+        # Use weighted average to combine ESIM and GPS
+        esim_point = esim_location['estimated_location']
+        gps_point = gps_locations[-1]  # Use most recent GPS
+        
+        esim_accuracy = esim_location['accuracy_meters']
+        gps_accuracy = 8  # Assume GPS accuracy of 8 meters (better than before)
+        
+        # Weighted average based on accuracy (more accurate = higher weight)
+        esim_weight = 1.0 / (esim_accuracy + 1e-6)
+        gps_weight = 1.0 / (gps_accuracy + 1e-6)
+        
+        total_weight = esim_weight + gps_weight
+        
+        #calculate weighted average position
+        fused_lat = (esim_point[0] * esim_weight + gps_point[0] * gps_weight) / total_weight
+        fused_lon = (esim_point[1] * esim_weight + gps_point[1] * gps_weight) / total_weight
+        
+        # Improved accuracy (weighted combination)
+        fused_accuracy = (esim_accuracy * esim_weight + gps_accuracy * gps_weight) / total_weight
+        
+        #add fused results to original ESIM location
+        esim_location['fused_location'] = (fused_lat, fused_lon)
+        esim_location['fused_accuracy_meters'] = fused_accuracy
+        esim_location['fusion_used'] = True
+        
+        return esim_location
+
+# Usage Example and Test
+def main():
+    # Initialize the tracker
+    esim_tracker = HighPrecisionESIMTracker()
+    
+    # Sample ESIM measurement data with realistic signal strengths
+    sample_esim_measurements = [
+        {
+            'mcc': '404',  # Mobile Country Code (India)
+            'mnc': '84',   # Mobile Network Code (Jio)
+            'cell_id': '12345678',
+            'signal_strength': -58,  # Strong signal (close to actual location)
+            'timing_advance': 1,
+            'frequency': 1800,
+            'environment': 'urban'
+        },
+        {
+            'mcc': '404',
+            'mnc': '84', 
+            'cell_id': '12345679',
+            'signal_strength': -62,  # Medium-strong signal
+            'timing_advance': 2,
+            'frequency': 1800,
+            'environment': 'urban'
+        },
+        {
+            'mcc': '404',
+            'mnc': '84',
+            'cell_id': '12345680',
+            'signal_strength': -65,  # Medium signal
+            'timing_advance': 2, 
+            'frequency': 1800,
+            'environment': 'urban'
+        },
+        {
+            'mcc': '404',
+            'mnc': '07',
+            'cell_id': '12345683',
+            'signal_strength': -60,  # Strong signal
+            'timing_advance': 1,
+            'frequency': 2100,
+            'environment': 'urban'
         }
-
-class Measurement(BaseModel):
-    latitude: float
-    longitude: float
-    timestamp: int
-
-class MeasurementsData(BaseModel):
-    measurements: List[Measurement] = Field(..., min_items=2)
-
-@app.get("/", response_class=HTMLResponse)
-async def serve_index():
-    html_content = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Complete Road Path Tracker</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-            body { font-family: 'Inter', sans-serif; }
-            #map { height: 700px; width: 100%; }
-            .leaflet-container { border-radius: 0.5rem; }
-            .custom-marker { background: transparent; border: none; }
-            .complete-road-path { stroke-width: 8; opacity: 0.9; }
-            .other-roads { stroke-width: 3; opacity: 0.3; }
-            .measurement-path { stroke-width: 4; opacity: 0.7; }
-            .info-panel { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        </style>
-    </head>
-    <body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
-        <div class="bg-white rounded-xl shadow-lg p-8 w-full max-w-7xl">
-            <h1 class="text-3xl font-bold text-center text-gray-800 mb-2">Complete Road Path Tracker</h1>
-            <p class="text-center text-gray-500 mb-6">Automatically detects source (first point) and destination (last point) from your measurements.</p>
-            
-            <div class="space-y-4 mb-6">
-                <h3 class="text-lg font-semibold text-gray-700">Car Measurements</h3>
-                <div class="grid grid-cols-1 md:grid-cols-4 gap-2">
-                    <div>
-                        <label for="latitude" class="block text-sm font-medium text-gray-700">Latitude</label>
-                        <input type="number" id="latitude" placeholder="28.6139" step="any" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 p-2 border">
-                    </div>
-                    <div>
-                        <label for="longitude" class="block text-sm font-medium text-gray-700">Longitude</label>
-                        <input type="number" id="longitude" placeholder="77.2090" step="any" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 p-2 border">
-                    </div>
-                    <div>
-                        <label for="timestamp" class="block text-sm font-medium text-gray-700">Timestamp (ms)</label>
-                        <input type="number" id="timestamp" placeholder="1721721000000" step="1" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 p-2 border">
-                    </div>
-                    <div class="flex items-end">
-                        <button id="addMeasurementBtn" class="w-full bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-300">
-                            Add Point
-                        </button>
-                    </div>
-                </div>
-            </div>
-
-            <div class="flex space-x-4 mb-4">
-                <button id="clearAllBtn" class="flex-1 bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-300">
-                    Clear All
-                </button>
-                <button id="calculateBtn" class="flex-1 bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-300">
-                    Find Complete Road Path
-                </button>
-            </div>
-            
-            <div id="measurementsList" class="mb-4 bg-gray-50 rounded-lg p-4 max-h-40 overflow-y-auto">
-                <p class="text-sm text-gray-500 text-center">No measurements added yet. First point = Source, Last point = Destination</p>
-            </div>
-            
-            <div id="resultsSection" class="mt-8">
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                    <div class="bg-green-50 p-4 rounded-lg">
-                        <h3 class="font-semibold text-green-800 mb-2">Source (First Point)</h3>
-                        <p id="sourceInfo" class="text-sm text-green-600">Add points to see source</p>
-                    </div>
-                    <div class="bg-blue-50 p-4 rounded-lg">
-                        <h3 class="font-semibold text-blue-800 mb-2">Route Info</h3>
-                        <p id="routeInfo" class="text-sm text-blue-600">Calculate to see route details</p>
-                    </div>
-                    <div class="bg-purple-50 p-4 rounded-lg">
-                        <h3 class="font-semibold text-purple-800 mb-2">Destination (Last Point)</h3>
-                        <p id="destInfo" class="text-sm text-purple-600">Add points to see destination</p>
-                    </div>
-                </div>
-                
-                <h2 class="text-xl font-bold text-gray-800 mb-2">Complete Road Path Map</h2>
-                <div id="mapContainer" class="w-full rounded-lg shadow-inner relative">
-                    <div id="map"></div>
-                    <div id="mapLoading" class="absolute inset-0 bg-gray-100 bg-opacity-90 flex items-center justify-center rounded-lg hidden">
-                        <div class="text-center">
-                            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
-                            <p class="text-gray-600">Finding complete road path from source to destination...</p>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="mt-4 bg-blue-50 p-4 rounded-lg">
-                    <p class="text-sm text-blue-700">
-                        <span class="font-semibold">Map Legend:</span><br>
-                        <span style="color: #FF4444">🏁 Source</span> - First measurement point<br>
-                        <span style="color: #44FF44">🎯 Destination</span> - Last measurement point<br>
-                        <span style="color: #FF6B00">🟧 Complete Road Path</span> - Full route from source to destination<br>
-                        <span style="color: red">● Red markers</span> - Car measurement points<br>
-                        <span style="color: purple">● Purple markers</span> - Projected points on road<br>
-                        <span style="color: blue">━ Blue line</span> - Direct path between measurements<br>
-                        <span style="color: gray">━ Gray lines</span> - Other roads in area
-                    </p>
-                </div>
-            </div>
-            
-            <div id="alertModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full hidden z-50">
-                <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
-                    <div class="mt-3 text-center">
-                        <h3 class="text-lg leading-6 font-medium text-gray-900" id="alertTitle"></h3>
-                        <div class="mt-2 px-7 py-3">
-                            <p class="text-sm text-gray-500" id="alertMessage"></p>
-                        </div>
-                        <div class="items-center px-4 py-3">
-                            <button id="alertCloseBtn" class="px-4 py-2 bg-blue-500 text-white text-base font-medium rounded-md w-full shadow-sm hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-300">
-                                OK
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <script>
-            const addMeasurementBtn = document.getElementById('addMeasurementBtn');
-            const clearAllBtn = document.getElementById('clearAllBtn');
-            const calculateBtn = document.getElementById('calculateBtn');
-            const latitudeInput = document.getElementById('latitude');
-            const longitudeInput = document.getElementById('longitude');
-            const timestampInput = document.getElementById('timestamp');
-            const measurementsList = document.getElementById('measurementsList');
-            const sourceInfo = document.getElementById('sourceInfo');
-            const destInfo = document.getElementById('destInfo');
-            const routeInfo = document.getElementById('routeInfo');
-            const mapContainer = document.getElementById('map');
-            const mapLoading = document.getElementById('mapLoading');
-            const alertModal = document.getElementById('alertModal');
-            const alertTitle = document.getElementById('alertTitle');
-            const alertMessage = document.getElementById('alertMessage');
-            const alertCloseBtn = document.getElementById('alertCloseBtn');
-            
-            let measurements = [];
-            let map = null;
-            let markers = [];
-            let polylines = [];
-            let roadLayers = [];
-
-            function initializeMap() {
-                const defaultCenter = [28.6139, 77.2090];
-                
-                map = L.map('map').setView(defaultCenter, 13);
-                
-                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    attribution: '© OpenStreetMap contributors',
-                    maxZoom: 18
-                }).addTo(map);
-            }
-
-            document.addEventListener('DOMContentLoaded', function() {
-                initializeMap();
-                loadSampleData();
-            });
-
-            function showAlert(title, message) {
-                alertTitle.textContent = title;
-                alertMessage.textContent = message;
-                alertModal.classList.remove('hidden');
-            }
-
-            alertCloseBtn.addEventListener('click', () => {
-                alertModal.classList.add('hidden');
-            });
-
-            function updateSourceDestinationInfo() {
-                if (measurements.length > 0) {
-                    const source = measurements[0];
-                    const destination = measurements[measurements.length - 1];
-                    
-                    sourceInfo.textContent = `Point 1: ${source.latitude.toFixed(6)}, ${source.longitude.toFixed(6)}`;
-                    destInfo.textContent = `Point ${measurements.length}: ${destination.latitude.toFixed(6)}, ${destination.longitude.toFixed(6)}`;
-                    
-                    if (measurements.length > 1) {
-                        routeInfo.innerHTML = `
-                            <strong>Total Points:</strong> ${measurements.length}<br>
-                            <strong>Intermediate:</strong> ${measurements.length - 2} points<br>
-                            <strong>Ready to calculate path</strong>
-                        `;
-                    }
-                } else {
-                    sourceInfo.textContent = 'Add points to see source';
-                    destInfo.textContent = 'Add points to see destination';
-                    routeInfo.textContent = 'Calculate to see route details';
-                }
-            }
-
-            addMeasurementBtn.addEventListener('click', () => {
-                const latitude = parseFloat(latitudeInput.value);
-                const longitude = parseFloat(longitudeInput.value);
-                const timestamp = parseInt(timestampInput.value);
-                
-                if (isNaN(latitude) || isNaN(longitude) || isNaN(timestamp)) {
-                    showAlert("Invalid Input", "Please enter valid numbers for all fields.");
-                    return;
-                }
-                
-                if (latitude < -90 || latitude > 90) {
-                    showAlert("Invalid Latitude", "Latitude must be between -90 and 90 degrees.");
-                    return;
-                }
-                
-                if (longitude < -180 || longitude > 180) {
-                    showAlert("Invalid Longitude", "Longitude must be between -180 and 180 degrees.");
-                    return;
-                }
-                
-                measurements.push({ latitude, longitude, timestamp });
-                updateMeasurementsList();
-                updateSourceDestinationInfo();
-                
-                latitudeInput.value = '';
-                longitudeInput.value = '';
-                timestampInput.value = '';
-                
-                // Auto-center map on first point
-                if (measurements.length === 1) {
-                    map.setView([latitude, longitude], 15);
-                }
-            });
-
-            clearAllBtn.addEventListener('click', () => {
-                measurements = [];
-                updateMeasurementsList();
-                updateSourceDestinationInfo();
-                clearMap();
-            });
-
-            function updateMeasurementsList() {
-                if (measurements.length === 0) {
-                    measurementsList.innerHTML = '<p class="text-sm text-gray-500 text-center">No measurements added yet. First point = Source, Last point = Destination</p>';
-                } else {
-                    measurementsList.innerHTML = '';
-                    measurements.forEach((measurement, index) => {
-                        const listItem = document.createElement('div');
-                        const isSource = index === 0;
-                        const isDestination = index === measurements.length - 1;
-                        let badge = '';
-                        
-                        if (isSource) badge = '<span class="bg-green-100 text-green-800 text-xs px-2 py-1 rounded ml-2">SOURCE</span>';
-                        if (isDestination) badge = '<span class="bg-purple-100 text-purple-800 text-xs px-2 py-1 rounded ml-2">DESTINATION</span>';
-                        
-                        listItem.className = "text-gray-700 text-sm p-2 bg-white rounded-md mb-2 shadow-sm flex justify-between items-center";
-                        listItem.innerHTML = `
-                            <div class="flex items-center">
-                                <span>📍 Point ${index + 1}: ${measurement.latitude.toFixed(6)}, ${measurement.longitude.toFixed(6)}</span>
-                                ${badge}
-                            </div>
-                            <button onclick="removeMeasurement(${index})" class="text-red-500 hover:text-red-700 text-xs">Remove</button>
-                        `;
-                        measurementsList.appendChild(listItem);
-                    });
-                }
-            }
-
-            window.removeMeasurement = function(index) {
-                measurements.splice(index, 1);
-                updateMeasurementsList();
-                updateSourceDestinationInfo();
-            };
-
-            function clearMap() {
-                markers.forEach(marker => map.removeLayer(marker));
-                polylines.forEach(polyline => map.removeLayer(polyline));
-                roadLayers.forEach(layer => map.removeLayer(layer));
-                
-                markers = [];
-                polylines = [];
-                roadLayers = [];
-            }
-
-            function addMarker(lat, lng, color, label, popupText, isPermanent = false) {
-                const icon = L.divIcon({
-                    html: `<div style="background-color: ${color}; width: 28px; height: 28px; border-radius: 50%; border: 3px solid white; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">${label}</div>`,
-                    className: 'custom-marker' + (isPermanent ? ' permanent-marker' : ''),
-                    iconSize: [32, 32],
-                    iconAnchor: [16, 16]
-                });
-                
-                const marker = L.marker([lat, lng], { icon: icon })
-                    .addTo(map)
-                    .bindPopup(popupText);
-                
-                if (!isPermanent) {
-                    markers.push(marker);
-                }
-                return marker;
-            }
-
-            function addPolyline(points, color, weight, dashArray = null, className = '') {
-                const polyline = L.polyline(points, {
-                    color: color,
-                    weight: weight,
-                    opacity: 0.8,
-                    dashArray: dashArray,
-                    className: className
-                }).addTo(map);
-                
-                polylines.push(polyline);
-                return polyline;
-            }
-
-            function plotCompleteRoadPath(roadData, measurements) {
-                clearMap();
-                
-                // Plot all roads in light gray
-                if (roadData.all_roads_in_area) {
-                    roadData.all_roads_in_area.forEach(road => {
-                        const roadPoints = road.coords.map(coord => [coord[0], coord[1]]);
-                        const roadPolyline = addPolyline(roadPoints, 'gray', 2, null, 'other-roads');
-                        roadLayers.push(roadPolyline);
-                    });
-                }
-                
-                // Highlight the complete road path in orange
-                if (roadData.complete_path && roadData.complete_path.length > 0) {
-                    const completePathPoints = roadData.complete_path.map(coord => [coord[0], coord[1]]);
-                    const mainPath = addPolyline(completePathPoints, '#FF6B00', 8, null, 'complete-road-path');
-                    roadLayers.push(mainPath);
-                    
-                    // Add popup with route info
-                    mainPath.bindPopup(`
-                        <strong>Complete Road Path</strong><br>
-                        Distance: ${(roadData.total_distance / 1000).toFixed(2)} km<br>
-                        Path Nodes: ${roadData.path_nodes}<br>
-                        Roads Used: ${Object.keys(roadData.used_roads).length}
-                    `);
-                }
-                
-                // Plot source and destination points
-                if (roadData.source_point) {
-                    const sourceMarker = addMarker(
-                        roadData.source_point[0], roadData.source_point[1], '#FF4444', 'S', 
-                        `<strong>Source Point (First Measurement)</strong><br>Lat: ${roadData.source_point[0].toFixed(6)}<br>Lon: ${roadData.source_point[1].toFixed(6)}`, true
-                    );
-                }
-                
-                if (roadData.destination_point) {
-                    const destMarker = addMarker(
-                        roadData.destination_point[0], roadData.destination_point[1], '#44FF44', 'D', 
-                        `<strong>Destination Point (Last Measurement)</strong><br>Lat: ${roadData.destination_point[0].toFixed(6)}<br>Lon: ${roadData.destination_point[1].toFixed(6)}`, true
-                    );
-                }
-                
-                // Plot projected source and destination
-                if (roadData.source_point_projected) {
-                    addMarker(
-                        roadData.source_point_projected[0], roadData.source_point_projected[1], '#FF8888', 'SP', 
-                        'Projected Source Point on Road'
-                    );
-                }
-                
-                if (roadData.destination_point_projected) {
-                    addMarker(
-                        roadData.destination_point_projected[0], roadData.destination_point_projected[1], '#88FF88', 'DP', 
-                        'Projected Destination Point on Road'
-                    );
-                }
-                
-                // Plot measurement points and their projections
-                const measurementPoints = [];
-                measurements.forEach((measurement, index) => {
-                    const point = [measurement.latitude, measurement.longitude];
-                    measurementPoints.push(point);
-                    
-                    // Original measurement
-                    const markerColor = index === 0 ? '#FF4444' : index === measurements.length - 1 ? '#44FF44' : 'red';
-                    const markerLabel = index === 0 ? 'S' : index === measurements.length - 1 ? 'D' : (index + 1);
-                    
-                    addMarker(
-                        measurement.latitude, measurement.longitude, markerColor, markerLabel,
-                        `${index === 0 ? 'SOURCE' : index === measurements.length - 1 ? 'DESTINATION' : 'Point ' + (index + 1)}<br>Lat: ${measurement.latitude.toFixed(6)}<br>Lon: ${measurement.longitude.toFixed(6)}`
-                    );
-                });
-                
-                // Plot projected measurements
-                if (roadData.projected_measurements) {
-                    roadData.projected_measurements.forEach((proj) => {
-                        const label = proj.type === 'source' ? 'SP' : proj.type === 'destination' ? 'DP' : 'P' + proj.index;
-                        addMarker(
-                            proj.projected[0], proj.projected[1], 'purple', label,
-                            `Projected ${proj.type.replace('_', ' ')}<br>Distance from actual: ${proj.distance.toFixed(1)}m`
-                        );
-                    });
-                }
-                
-                // Draw direct path between measurements
-                if (measurementPoints.length > 1) {
-                    addPolyline(measurementPoints, 'blue', 4, null, 'measurement-path');
-                }
-                
-                // Fit map to show the complete path
-                if (roadData.complete_path && roadData.complete_path.length > 0) {
-                    const pathBounds = L.latLngBounds(roadData.complete_path.map(coord => [coord[0], coord[1]]));
-                    map.fitBounds(pathBounds.pad(0.1));
-                }
-                
-                // Update info panels
-                if (roadData.source_point) {
-                    sourceInfo.textContent = `${roadData.source_point[0].toFixed(6)}, ${roadData.source_point[1].toFixed(6)}`;
-                }
-                if (roadData.destination_point) {
-                    destInfo.textContent = `${roadData.destination_point[0].toFixed(6)}, ${roadData.destination_point[1].toFixed(6)}`;
-                }
-                if (roadData.total_distance) {
-                    routeInfo.innerHTML = `
-                        <strong>Distance:</strong> ${(roadData.total_distance / 1000).toFixed(2)} km<br>
-                        <strong>Path Nodes:</strong> ${roadData.path_nodes}<br>
-                        <strong>Roads Used:</strong> ${Object.keys(roadData.used_roads).length}<br>
-                        <strong>Points:</strong> ${measurements.length} total
-                    `;
-                }
-            }
-
-            calculateBtn.addEventListener('click', async () => {
-                if (measurements.length < 2) {
-                    showAlert("Not Enough Points", "Please add at least two points to determine source and destination.");
-                    return;
-                }
-                
-                mapLoading.style.display = 'flex';
-                
-                try {
-                    const response = await fetch('/find-complete-road-path', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ measurements })
-                    });
-                    
-                    if (!response.ok) {
-                        const errorText = await response.text();
-                        throw new Error(`Server error: ${response.status} - ${errorText}`);
-                    }
-                    
-                    const data = await response.json();
-                    
-                    if (data.error) {
-                        throw new Error(data.error);
-                    }
-                    
-                    // Plot the complete road path
-                    plotCompleteRoadPath(data, measurements);
-                    
-                    mapLoading.style.display = 'none';
-                    
-                } catch (error) {
-                    showAlert("Path Finding Error", error.message);
-                    mapLoading.style.display = 'none';
-                }
-            });
-
-            function loadSampleData() {
-                measurements = [
-                    { latitude: 28.574444, longitude: 77.384167, timestamp: 1721721000000},
-                    {latitude: 28.568611, longitude: 77.391667, timestamp: 1721721000000},
-                    {latitude: 28.560833, longitude: 77.367222, timestamp: 1721721000000},
-                    {latitude: 28.564167, longitude: 77.365278, timestamp: 1721721000000},
-                    {latitude: 28.561389, longitude: 77.343056, timestamp: 1721721000000},
-                    {latitude: 28.548889, longitude: 77.306111, timestamp: 1721721000000},
-                    {latitude: 28.547778, longitude: 77.264444, timestamp: 1721721000000},
-                    {latitude: 28.546389, longitude: 77.224722, timestamp: 1721721000000},
-                    {latitude: 28.570833, longitude: 77.165000, timestamp: 1721721000000},
-                    {latitude: 28.537222, longitude: 77.111944, timestamp: 1721721000000},
-                    {latitude: 28.516667, longitude: 77.093611, timestamp: 1721721000000}
-
-                ];
-                
-                updateMeasurementsList();
-                updateSourceDestinationInfo();
-                
-                // Set map view to sample area
-                map.setView([28.6177, 77.2150], 14);
-            }
-
-            // Handle Enter key in input fields
-            [latitudeInput, longitudeInput, timestampInput].forEach(input => {
-                input.addEventListener('keypress', (e) => {
-                    if (e.key === 'Enter') {
-                        addMeasurementBtn.click();
-                    }
-                });
-            });
-
-            // Add sample data button
-            const sampleDataBtn = document.createElement('button');
-            sampleDataBtn.textContent = 'Load Sample Journey';
-            sampleDataBtn.className = 'w-full bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-300 mt-2';
-            sampleDataBtn.onclick = loadSampleData;
-            calculateBtn.parentNode.insertBefore(sampleDataBtn, calculateBtn.nextSibling);
-        </script>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html_content)
-
-@app.post("/find-complete-road-path")
-async def find_complete_road_path(data: MeasurementsData):
-    try:
-        measurements = [(m.latitude, m.longitude) for m in data.measurements]
-        
-        # Use road tracker to find complete path (automatically uses first as source, last as destination)
-        tracker = CompleteRoadTracker()
-        road_data = tracker.find_complete_road_path(measurements)
-        
-        return road_data
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+    ]
+    
+    # Sample GPS data for fusion
+    sample_gps_locations = [
+        (28.632429, 77.218788),  # Actual GPS coordinates
+        (28.632435, 77.218792),  # Slight movement
+        (28.632440, 77.218795)   # More movement
+    ]
+    
+    print("=== High Precision ESIM Location Tracking ===")
+    print(f"Processing {len(sample_esim_measurements)} tower measurements...")
+    
+    # Get ESIM location
+    esim_result = esim_tracker.advanced_triangulation(sample_esim_measurements)
+    
+    if 'error' in esim_result:
+        print(f"Error: {esim_result['error']}")
+        return
+    
+    print(f"\nESIM Only Result:")
+    print(f"Location: {esim_result['estimated_location']}")
+    print(f"Accuracy: {esim_result['accuracy_meters']:.1f} meters")
+    print(f"Confidence: {esim_result['confidence']}")
+    print(f"Towers Used: {esim_result['number_of_towers']}")
+    print(f"Methods: {esim_result['methods_used']}")
+    
+    # Enhance with GPS fusion
+    enhanced_result = esim_tracker.enhance_with_gps_fusion(esim_result, sample_gps_locations)
+    
+    print(f"\nEnhanced with GPS Fusion:")
+    print(f"Fused Location: {enhanced_result['fused_location']}")
+    print(f"Final Accuracy: {enhanced_result['fused_accuracy_meters']:.1f} meters")
+    
+    # Calculate distance from actual GPS
+    actual_gps = (28.632429, 77.218788)
+    esim_distance = esim_tracker.haversine_distance(
+        esim_result['estimated_location'], actual_gps
+    )
+    fused_distance = esim_tracker.haversine_distance(
+        enhanced_result['fused_location'], actual_gps
+    )
+    
+    print(f"\nComparison with Actual GPS ({actual_gps}):")
+    print(f"ESIM Only Distance Error: {esim_distance:.1f} meters")
+    print(f"Fused Location Distance Error: {fused_distance:.1f} meters")
+    
+    if esim_distance > 0:
+        improvement = ((esim_distance - fused_distance) / esim_distance * 100)
+        print(f"Improvement: {improvement:.1f}%")
+    
+    # Additional diagnostics
+    print(f"\nTower Details:")
+    for i, tower in enumerate(esim_result.get('tower_details', [])):
+        print(f"  Tower {i+1}: {tower['tower_id']}")
+        print(f"    Signal: {tower['signal_strength']}dBm, Est. Distance: {tower['distance_estimated']:.1f}m")
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    main()
