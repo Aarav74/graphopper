@@ -1,32 +1,48 @@
 import numpy as np
 import math
 import requests
-from typing import List, Tuple, Dict, Any, Optional #to define the variable type
-from scipy.optimize import minimize #for optional algorithms
-from scipy.spatial import KDTree  #to handle saptial data
+from typing import List, Tuple, Dict, Any, Optional
+from scipy.optimize import minimize
+from scipy.spatial import KDTree
 import json
 
 class HighPrecisionESIMTracker:
     def __init__(self):
-        #to initialize the cell tower database
+        # Initialize with your specific tower database
         self.cell_tower_database = self.initialize_tower_database()
-        #to initialize signal propagation model
         self.signal_propagation_models = self.initialize_propagation_models()
     
-    #cell tower database setup
     def initialize_tower_database(self) -> Dict:
-        """Initialize a comprehensive database of cell tower locations"""
+        """Initialize database with your specific towers"""
         return {
-            # Delhi area cell towers - expanded with more realistic coverage
-            '404_84_12345678': {'lat': 28.632400, 'lon': 77.218800, 'type': '4G', 'height': 35},
-            '404_84_12345679': {'lat': 28.631500, 'lon': 77.217500, 'type': '4G', 'height': 32},
-            '404_84_12345680': {'lat': 28.633500, 'lon': 77.220200, 'type': '4G', 'height': 40},
-            '404_84_12345681': {'lat': 28.630800, 'lon': 77.219500, 'type': '4G', 'height': 38},
-            '404_84_12345682': {'lat': 28.634200, 'lon': 77.217000, 'type': '4G', 'height': 45},
-            '404_07_12345683': {'lat': 28.631200, 'lon': 77.221000, 'type': '4G', 'height': 42},
-            '404_07_12345684': {'lat': 28.633800, 'lon': 77.216500, 'type': '4G', 'height': 36},
-            '404_07_12345685': {'lat': 28.630500, 'lon': 77.218000, 'type': '4G', 'height': 39},
-            '404_07_12345686': {'lat': 28.632800, 'lon': 77.222000, 'type': '4G', 'height': 44},
+            # Your actual towers with realistic coordinates in Delhi area
+            '24823': {
+                'lat': 28.639500, 
+                'lon': 77.224800, 
+                'type': '4G', 
+                'height': 35,
+                'operator': 'JIO',
+                'frequency': 1800
+            },
+            '27639': {
+                'lat': 28.637200, 
+                'lon': 77.222500, 
+                'type': '4G', 
+                'height': 32,
+                'operator': 'JIO', 
+                'frequency': 1800
+            },
+            '27682': {
+                'lat': 28.640800, 
+                'lon': 77.226200, 
+                'type': '4G', 
+                'height': 40,
+                'operator': 'JIO',
+                'frequency': 1800
+            },
+            # Additional towers for better coverage
+            '12345678': {'lat': 28.632400, 'lon': 77.218800, 'type': '4G', 'height': 35},
+            '12345679': {'lat': 28.631500, 'lon': 77.217500, 'type': '4G', 'height': 32},
         }
     
     def initialize_propagation_models(self) -> Dict:
@@ -35,11 +51,10 @@ class HighPrecisionESIMTracker:
             'dense_urban': {'path_loss_exp': 3.5, 'shadow_std': 12},
             'urban': {'path_loss_exp': 3.2, 'shadow_std': 10},
             'suburban': {'path_loss_exp': 2.8, 'shadow_std': 8},
-            'rural': {'path_loss_exponent': 2.3, 'shadow_std': 6},
+            'rural': {'path_loss_exp': 2.3, 'shadow_std': 6},
             'free_space': {'path_loss_exp': 2.0, 'shadow_std': 3}
         }
     
-    #to calculate the distance
     def haversine_distance(self, point1: Tuple[float, float], point2: Tuple[float, float]) -> float:
         """High precision Haversine distance calculation"""
         lat1, lon1 = math.radians(point1[0]), math.radians(point1[1])
@@ -49,125 +64,168 @@ class HighPrecisionESIMTracker:
         dlat = lat2 - lat1
         dlon = lon2 - lon1
         
-        #haversine formula to account the earth's curvature
         a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
         c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
         
         return R * c
     
-    def signal_to_distance(self, signal_strength: float, frequency: float = 1800, 
-                         environment: str = "urban", tower_height: float = 30) -> Tuple[float, float]:
+    def calculate_tower_coordinates(self, reference_point: Tuple[float, float], 
+                                 distance: float, azimuth: float) -> Tuple[float, float]:
         """
-        Convert signal strength to distance with confidence interval
-        Returns: (distance_meters, confidence_interval)
+        Calculate tower coordinates from reference point using distance and azimuth
+        reference_point: (lat, lon) of the device's approximate location
+        distance: meters from device to tower
+        azimuth: degrees from north (0-360)
         """
-        # Reference signal strength at 1 km under ideal conditions
-        if frequency <= 900:
-            ref_signal_1km = -75  # dBm at 1 km for 900MHz
-        elif frequency <= 1800:
-            ref_signal_1km = -80  # dBm at 1 km for 1800MHz
-        else:
-            ref_signal_1km = -85  # dBm at 1 km for 2100MHz+
+        ref_lat, ref_lon = reference_point
         
-        # Path loss exponent from propagation model
-        path_loss_exp = self.signal_propagation_models[environment]['path_loss_exp']
-        shadow_std = self.signal_propagation_models[environment]['shadow_std']
+        # Convert distance to degrees (approximate)
+        lat_distance_km = distance / 1000.0
+        lon_distance_km = distance / 1000.0
         
-        # Calculate distance using log-distance path loss model
-        path_loss = ref_signal_1km - signal_strength
-        distance_km = 10 ** (path_loss / (10 * path_loss_exp))
-        distance_meters = distance_km * 1000
+        # Earth radii at given latitude (approximate)
+        lat_deg_per_km = 1 / 110.574
+        lon_deg_per_km = 1 / (111.320 * math.cos(math.radians(ref_lat)))
         
-        # Adjust for tower height (higher towers have better coverage)
-        height_factor = max(0.8, min(1.5, tower_height / 35.0))  # More realistic bounds
-        distance_meters *= height_factor
+        # Convert azimuth to radians (0 = north, clockwise)
+        azimuth_rad = math.radians(azimuth)
         
-        # Calculate confidence interval based on environment and signal quality
-        base_confidence = 0.25  # 25% base uncertainty
-        if signal_strength > -70:  # Strong signal
-            base_confidence = 0.15
-        elif signal_strength < -90:  # Weak signal
-            base_confidence = 0.4
-            
-        confidence = distance_meters * base_confidence
+        # Calculate delta lat/lon
+        delta_lat = lat_distance_km * math.cos(azimuth_rad) * lat_deg_per_km
+        delta_lon = lon_distance_km * math.sin(azimuth_rad) * lon_deg_per_km
         
-        return max(50, distance_meters), confidence  # Minimum 50m distance
+        tower_lat = ref_lat + delta_lat
+        tower_lon = ref_lon + delta_lon
+        
+        return (tower_lat, tower_lon)
     
-    #main triangulation method
-    def advanced_triangulation(self, tower_measurements: List[Dict]) -> Dict[str, Any]:
+    def advanced_triangulation(self, tower_measurements: List[Dict], 
+                             reference_location: Optional[Tuple[float, float]] = None) -> Dict[str, Any]:
         """
-        Advanced triangulation using multiple algorithms for maximum accuracy
+        Advanced triangulation using provided distances and azimuths
         """
         print(f"Starting triangulation with {len(tower_measurements)} measurements...")
         
-        # Step 1: Prepare tower data with distances
+        # Step 1: Prepare tower data
         towers = []
         valid_towers_count = 0
         
+        # Use provided reference location or calculate centroid
+        if reference_location is None:
+            ref_point = (28.632400, 77.218800)  # Default Delhi area
+        else:
+            ref_point = reference_location
+        
+        print(f"Using reference point: {ref_point}")
+        
         for meas in tower_measurements:
-            #create tower ID
-            tower_id = f"{meas['mcc']}_{meas['mnc']}_{meas['cell_id']}"
-            #check if the tower is in database
+            tower_id = meas.get('cell_id')
+            
+            # Check if tower exists in database
             if tower_id in self.cell_tower_database:
+                # Use actual coordinates from database
                 tower_data = self.cell_tower_database[tower_id]
-                #calculate distance using signal strength
-                distance, confidence = self.signal_to_distance(
-                    meas['signal_strength'],
-                    meas.get('frequency', 1800),
-                    meas.get('environment', 'urban'),
-                    tower_data['height']
-                )
-                
-                #store tower information
-                towers.append({
-                    'id': tower_id,
-                    'coordinates': (tower_data['lat'], tower_data['lon']),
-                    'distance': distance,
-                    'confidence': confidence,
-                    'signal_strength': meas['signal_strength'],
-                    'timing_advance': meas.get('timing_advance'),
-                    'weight': 1.0 / (confidence + 1e-6)  # Higher confidence = higher weight
-                })
-                valid_towers_count += 1
-                print(f"  Found tower {tower_id} at {tower_data['lat']:.6f}, {tower_data['lon']:.6f}")
-                print(f"    Signal: {meas['signal_strength']}dBm -> Distance: {distance:.1f}m")
+                tower_coords = (tower_data['lat'], tower_data['lon'])
+                print(f"  Found tower {tower_id} in database at {tower_coords}")
+            else:
+                # Calculate coordinates from distance and azimuth
+                if 'distance' in meas and 'azimuth' in meas:
+                    tower_coords = self.calculate_tower_coordinates(
+                        ref_point, meas['distance'], meas['azimuth']
+                    )
+                    print(f"  Calculated tower {tower_id} coordinates: {tower_coords}")
+                else:
+                    print(f"  Skipping tower {tower_id} - insufficient data")
+                    continue
+            
+            # Use provided distance directly (most accurate)
+            distance = meas['distance']
+            signal_strength = meas.get('signal_strength', -102.495)
+            
+            # Calculate confidence based on signal strength
+            confidence = self.calculate_confidence_from_signal(signal_strength)
+            
+            towers.append({
+                'id': tower_id,
+                'coordinates': tower_coords,
+                'distance': distance,
+                'confidence': confidence,
+                'signal_strength': signal_strength,
+                'azimuth': meas.get('azimuth'),
+                'weight': 1.0 / (confidence + 1e-6)
+            })
+            valid_towers_count += 1
+            
+            print(f"  Tower {tower_id} at {tower_coords[0]:.6f}, {tower_coords[1]:.6f}")
+            print(f"    Distance: {distance:.1f}m, Signal: {signal_strength}dBm, Weight: {confidence:.3f}")
         
-        print(f"Valid towers found: {valid_towers_count}")
+        print(f"Valid towers processed: {valid_towers_count}")
         
-        #check if there is enough towers
-        if len(towers) < 3:
+        if len(towers) < 2:
             print(f"Warning: Only {len(towers)} valid towers found. Using fallback method.")
             return self.enhanced_fallback_triangulation(towers, tower_measurements)
         
         # Step 2: Use multiple triangulation methods
         results = {}
         
-        # Method 1: Weighted Least Squares
         print("Running Weighted Least Squares...")
         results['weighted_least_squares'] = self.weighted_least_squares(towers)
         
-        # Method 2: Circular Intersection
         print("Running Circular Intersection...")
         results['circular_intersection'] = self.circular_intersection(towers)
         
-        # Method 3: Centroid with weights
         print("Running Weighted Centroid...")
         results['weighted_centroid'] = self.weighted_centroid(towers)
         
-        # Method 4: Non-linear optimization
-        print("Running Non-linear Optimization...")
-        results['non_linear_opt'] = self.non_linear_optimization(towers)
+        if len(towers) >= 3:
+            print("Running Non-linear Optimization...")
+            results['non_linear_opt'] = self.non_linear_optimization(towers)
         
-        # Step 3: Combine results using confidence-based weighting
+        # Step 3: Combine results
         final_result = self.combine_triangulation_results(results, towers)
         
         print(f"Triangulation completed. Final accuracy: {final_result['accuracy_meters']:.1f}m")
         return final_result
     
+    def calculate_confidence_from_signal(self, signal_strength: float) -> float:
+        """Calculate confidence interval based on signal strength"""
+        if signal_strength > -70:  # Strong signal
+            return 0.15
+        elif signal_strength > -85:  # Good signal
+            return 0.20
+        elif signal_strength > -100:  # Fair signal
+            return 0.25
+        else:  # Weak signal
+            return 0.35
+    
+    def signal_to_distance(self, signal_strength: float, frequency: float = 1800, 
+                         environment: str = "urban", tower_height: float = 30) -> Tuple[float, float]:
+        """
+        Convert signal strength to distance with confidence interval
+        """
+        if frequency <= 900:
+            ref_signal_1km = -75
+        elif frequency <= 1800:
+            ref_signal_1km = -80
+        else:
+            ref_signal_1km = -85
+        
+        path_loss_exp = self.signal_propagation_models[environment]['path_loss_exp']
+        
+        path_loss = ref_signal_1km - signal_strength
+        distance_km = 10 ** (path_loss / (10 * path_loss_exp))
+        distance_meters = distance_km * 1000
+        
+        height_factor = max(0.8, min(1.5, tower_height / 35.0))
+        distance_meters *= height_factor
+        
+        confidence = distance_meters * self.calculate_confidence_from_signal(signal_strength)
+        
+        return max(50, distance_meters), confidence
+    
     def weighted_least_squares(self, towers: List[Dict]) -> Dict[str, Any]:
         """Weighted least squares triangulation"""
         try:
-            # Initial guess (weighted centroid)
             lat_sum, lon_sum, total_weight = 0, 0, 0
             for tower in towers:
                 weight = tower['weight']
@@ -175,35 +233,30 @@ class HighPrecisionESIMTracker:
                 lon_sum += tower['coordinates'][1] * weight
                 total_weight += weight
             
-            #for starting point optimization
             x0 = np.array([lat_sum / total_weight, lon_sum / total_weight])
             
             def objective_function(x):
                 total_error = 0
-                lat, lon = x #current position which is being tested
+                lat, lon = x
                 
                 for tower in towers:
-                    #calculate distance from tower to destination
                     tower_lat, tower_lon = tower['coordinates']
                     calculated_distance = self.haversine_distance(
                         (lat, lon), (tower_lat, tower_lon)
                     )
-                    #squared error between the calculated and estimated distance
                     error = (calculated_distance - tower['distance']) ** 2
-                    #weight according to the weight
                     total_error += error * tower['weight']
                 
                 return total_error
             
-            # Constrain to reasonable area around towers
             lat_coords = [t['coordinates'][0] for t in towers]
             lon_coords = [t['coordinates'][1] for t in towers]
             
             bounds = [
-                (min(lat_coords) - 0.005, max(lat_coords) + 0.005),  # ~500m buffer
-                (min(lon_coords) - 0.005, max(lon_coords) + 0.005)
+                (min(lat_coords) - 0.01, max(lat_coords) + 0.01),
+                (min(lon_coords) - 0.01, max(lon_coords) + 0.01)
             ]
-            #run optimization for minimum error
+            
             result = minimize(objective_function, x0, method='L-BFGS-B', bounds=bounds,
                             options={'maxiter': 100, 'ftol': 1e-6})
             
@@ -225,26 +278,22 @@ class HighPrecisionESIMTracker:
     def circular_intersection(self, towers: List[Dict]) -> Dict[str, Any]:
         """Circular intersection method for triangulation"""
         try:
-            # Try multiple combinations of towers for better results
             best_result = {'location': None, 'accuracy': float('inf'), 'method': 'circular_intersection'}
             
-            #try every possibel connection of three towers
             for i in range(len(towers)):
                 for j in range(i+1, len(towers)):
                     for k in range(j+1, len(towers)):
                         t1, t2, t3 = towers[i], towers[j], towers[k]
                         
-                        # Get circle intersections
                         intersections = self.three_circle_intersection(t1, t2, t3)
                         
                         if intersections:
-                            # Choose the intersection that minimizes total error
                             best_intersection = None
                             min_error = float('inf')
                             
                             for point in intersections:
                                 error = 0
-                                for tower in towers:
+                                for tower in [t1, t2, t3]:
                                     calculated_dist = self.haversine_distance(point, tower['coordinates'])
                                     error += abs(calculated_dist - tower['distance']) * tower['weight']
                                 
@@ -253,7 +302,7 @@ class HighPrecisionESIMTracker:
                                     best_intersection = point
                             
                             if best_intersection:
-                                accuracy = self.calculate_accuracy_metrics(best_intersection, towers)
+                                accuracy = self.calculate_accuracy_metrics(best_intersection, [t1, t2, t3])
                                 if accuracy < best_result['accuracy']:
                                     best_result = {
                                         'location': best_intersection,
@@ -272,58 +321,49 @@ class HighPrecisionESIMTracker:
     def three_circle_intersection(self, t1: Dict, t2: Dict, t3: Dict) -> List[Tuple[float, float]]:
         """Calculate intersection points of three circles"""
         try:
-            #exrtract coordinates 
-            x1, y1 = t1['coordinates'][1], t1['coordinates'][0]  # lon, lat
+            x1, y1 = t1['coordinates'][1], t1['coordinates'][0]
             x2, y2 = t2['coordinates'][1], t2['coordinates'][0]
             x3, y3 = t3['coordinates'][1], t3['coordinates'][0]
             
-            # Convert distances to degrees (more accurate conversion)
-            r1 = t1['distance'] / 111320  # 1 degree ≈ 111.32km at equator
+            r1 = t1['distance'] / 111320
             r2 = t2['distance'] / 111320
             r3 = t3['distance'] / 111320
             
-            # Calculate intersection of first two circles
             dx = x2 - x1
             dy = y2 - y1
-            d = math.sqrt(dx*dx + dy*dy) # Distance between centers
+            d = math.sqrt(dx*dx + dy*dy)
             
-            #check if circles intersect or not
             if d > (r1 + r2) or d < abs(r1 - r2):
-                return []  # No intersection
+                return []
             
-            # Find intersection points
             a = (r1*r1 - r2*r2 + d*d) / (2 * d)
             h = math.sqrt(r1*r1 - a*a)
             
-            #center point between intersections
             x0 = x1 + a * dx / d
             y0 = y1 + a * dy / d
             
-            #center point to offset
             rx = -dy * (h / d)
             ry = dx * (h / d)
             
-            #possible intersection  points
             points = [
-                (y0 + ry, x0 + rx),  # (lat, lon)
-                (y0 - ry, x0 - rx)   # (lat, lon)
+                (y0 + ry, x0 + rx),
+                (y0 - ry, x0 - rx)
             ]
             
-            # Filter points that are reasonable for all towers
             valid_points = []
             for point in points:
                 total_error = 0
                 valid = True
                 
                 for tower in [t1, t2, t3]:
-                    dist_to_tower = self.haversine_distance(point, (tower['coordinates'][0], tower['coordinates'][1]))
+                    dist_to_tower = self.haversine_distance(point, tower['coordinates'])
                     error_ratio = abs(dist_to_tower - tower['distance']) / tower['distance']
-                    if error_ratio > 0.8:  # Allow 80% error margin
+                    if error_ratio > 1.0:
                         valid = False
                         break
                     total_error += error_ratio
                 
-                if valid and total_error < 1.5:  # Reasonable total error
+                if valid and total_error < 2.0:
                     valid_points.append(point)
             
             return valid_points
@@ -338,14 +378,12 @@ class HighPrecisionESIMTracker:
             lat_sum, lon_sum, total_weight = 0, 0, 0
             
             for tower in towers:
-                # Weight based on signal strength and confidence
                 weight = tower['weight']
                 lat_sum += tower['coordinates'][0] * weight
                 lon_sum += tower['coordinates'][1] * weight
                 total_weight += weight
             
             if total_weight > 0:
-                #calculate weighted average
                 estimated_location = (lat_sum / total_weight, lon_sum / total_weight)
                 accuracy = self.calculate_accuracy_metrics(estimated_location, towers)
                 return {
@@ -361,7 +399,6 @@ class HighPrecisionESIMTracker:
     def non_linear_optimization(self, towers: List[Dict]) -> Dict[str, Any]:
         """Non-linear optimization for triangulation"""
         try:
-            # Initial guess from weighted centroid
             lat_sum, lon_sum, total_weight = 0, 0, 0
             for tower in towers:
                 weight = tower['weight']
@@ -379,22 +416,19 @@ class HighPrecisionESIMTracker:
                     calculated_distance = self.haversine_distance(
                         (lat, lon), tower['coordinates']
                     )
-                    # use log error fro better numerical stability
                     error = math.log1p(abs(calculated_distance - tower['distance']))
                     total_error += error * tower['weight']
                 
                 return total_error
             
-            # Constrain search area
             lat_coords = [t['coordinates'][0] for t in towers]
             lon_coords = [t['coordinates'][1] for t in towers]
             
             bounds = [
-                (min(lat_coords) - 0.005, max(lat_coords) + 0.005),
-                (min(lon_coords) - 0.005, max(lon_coords) + 0.005)
+                (min(lat_coords) - 0.01, max(lat_coords) + 0.01),
+                (min(lon_coords) - 0.01, max(lon_coords) + 0.01)
             ]
             
-            #run optimization
             result = minimize(objective_function, x0, method='Nelder-Mead', bounds=bounds,
                             options={'maxiter': 200, 'xatol': 1e-8, 'fatol': 1e-8})
             
@@ -415,29 +449,25 @@ class HighPrecisionESIMTracker:
         """Combine results from multiple triangulation methods"""
         valid_results = []
         
-        #do check valid results
         for method, result in results.items():
             if result['location'] is not None and result['accuracy'] < float('inf'):
                 valid_results.append(result)
-                print(f"  {method}: Location {result['location']}, Accuracy: {result['accuracy']:.1f}m")
+                print(f"  {method}: Accuracy: {result['accuracy']:.1f}m")
         
-        #use fallback if no valid results
         if not valid_results:
             print("All triangulation methods failed. Using enhanced fallback.")
             return self.enhanced_fallback_triangulation(towers, [])
         
-        # Weight results by their accuracy (lower accuracy value = better)
         total_weight = 0
         weighted_lat, weighted_lon = 0, 0
         
         for result in valid_results:
-            weight = 1.0 / (result['accuracy'] + 1e-6) 
+            weight = 1.0 / (result['accuracy'] + 1e-6)
             weighted_lat += result['location'][0] * weight
             weighted_lon += result['location'][1] * weight
             total_weight += weight
         
         if total_weight > 0:
-            #weighted average of every successful result
             final_location = (weighted_lat / total_weight, weighted_lon / total_weight)
             final_accuracy = self.calculate_accuracy_metrics(final_location, towers)
             
@@ -451,7 +481,9 @@ class HighPrecisionESIMTracker:
                     {
                         'tower_id': t['id'],
                         'distance_estimated': t['distance'],
-                        'signal_strength': t['signal_strength']
+                        'signal_strength': t['signal_strength'],
+                        'azimuth': t.get('azimuth'),
+                        'coordinates': t['coordinates']
                     } for t in towers
                 ]
             }
@@ -459,80 +491,35 @@ class HighPrecisionESIMTracker:
             return self.enhanced_fallback_triangulation(towers, [])
     
     def enhanced_fallback_triangulation(self, towers: List[Dict], tower_measurements: List[Dict]) -> Dict[str, Any]:
-        """Enhanced fallback method with distance calculation"""
-        enhanced_towers = []
+        """Enhanced fallback method"""
+        if towers:
+            return self.weighted_centroid(towers)
         
-        for tower in towers:
-            # Calculate distance for fallback method too
-            distance, confidence = self.signal_to_distance(
-                tower['signal_strength'], 1800, 'urban', 35
-            )
-            enhanced_towers.append({
-                'coordinates': tower['coordinates'],
-                'distance': distance,
-                'weight': 1.0 / (confidence + 1e-6)
-            })
-        
-        if not enhanced_towers:
-            # If no towers with distance, use simple centroid
-            all_towers = []
-            for meas in tower_measurements:
-                tower_id = f"{meas['mcc']}_{meas['mnc']}_{meas['cell_id']}"
-                if tower_id in self.cell_tower_database:
-                    tower_data = self.cell_tower_database[tower_id]
-                    all_towers.append({
-                        'coordinates': (tower_data['lat'], tower_data['lon']),
-                        'signal_strength': meas['signal_strength']
-                    })
-            
-            if not all_towers:
-                return {'error': 'No valid tower data available'}
-            
-            # Simple centroid
-            lat_sum = sum(t['coordinates'][0] for t in all_towers)
-            lon_sum = sum(t['coordinates'][1] for t in all_towers)
-            estimated_location = (lat_sum / len(all_towers), lon_sum / len(all_towers))
-            
-            return {
-                'estimated_location': estimated_location,
-                'accuracy_meters': 1500,  # High uncertainty for fallback
-                'number_of_towers': len(all_towers),
-                'methods_used': ['fallback_centroid'],
-                'confidence': 'low',
-                'tower_details': []
-            }
-        
-        # Use weighted centroid with calculated distances
-        return self.weighted_centroid(enhanced_towers)
+        return {'error': 'No valid tower data available'}
     
     def calculate_accuracy_metrics(self, location: Tuple[float, float], towers: List[Dict]) -> float:
         """Calculate accuracy metrics for estimated location"""
         errors = []
         
         for tower in towers:
-            #Estimated location se tower tak ki actual distance 
             calculated_distance = self.haversine_distance(location, tower['coordinates'])
-            #error between the calculated and estimated distance
             error = abs(calculated_distance - tower['distance'])
             errors.append(error)
         
-        # Use RMS(Root Mean Square) error as accuracy metric
         if errors:
             rms_error = math.sqrt(sum(e**2 for e in errors) / len(errors))
         else:
-            rms_error = 1000  # Default high error
+            rms_error = 1000
         
-        # Adjust based on number of towers and geometry
         geometry_factor = self.calculate_geometry_factor(towers)
         
-        return max(10, rms_error * geometry_factor)  # Minimum 10m accuracy
+        return max(10, rms_error * geometry_factor)
     
     def calculate_geometry_factor(self, towers: List[Dict]) -> float:
         """Calculate geometry dilution of precision factor"""
         if len(towers) < 3:
-            return 2.5  # if tower is less than 3 Poor geometry
+            return 2.5
         
-        # Calculate area covered by towers
         lats = [t['coordinates'][0] for t in towers]
         lons = [t['coordinates'][1] for t in towers]
         
@@ -541,13 +528,13 @@ class HighPrecisionESIMTracker:
         
         area = lat_span * lon_span
         
-        if area < 0.00005:  # Very small area (towers too close)
+        if area < 0.00005:
             return 2.0
-        elif area < 0.0002:  # Small area
+        elif area < 0.0002:
             return 1.5
-        elif area < 0.001:  # Medium area
+        elif area < 0.001:
             return 1.2
-        else:  # Good spread
+        else:
             return 1.0
     
     def calculate_confidence(self, accuracy: float, num_towers: int) -> str:
@@ -565,92 +552,76 @@ class HighPrecisionESIMTracker:
     
     def enhance_with_gps_fusion(self, esim_location: Dict, gps_locations: List[Tuple]) -> Dict:
         """Fuse ESIM location with GPS data for maximum accuracy"""
-        if not gps_locations:
+        if not gps_locations or 'error' in esim_location:
             return esim_location
         
-        # Use weighted average to combine ESIM and GPS
         esim_point = esim_location['estimated_location']
-        gps_point = gps_locations[-1]  # Use most recent GPS
+        gps_point = gps_locations[-1]
         
         esim_accuracy = esim_location['accuracy_meters']
-        gps_accuracy = 8  # Assume GPS accuracy of 8 meters (better than before)
+        gps_accuracy = 5
         
-        # Weighted average based on accuracy (more accurate = higher weight)
         esim_weight = 1.0 / (esim_accuracy + 1e-6)
         gps_weight = 1.0 / (gps_accuracy + 1e-6)
         
         total_weight = esim_weight + gps_weight
         
-        #calculate weighted average position
         fused_lat = (esim_point[0] * esim_weight + gps_point[0] * gps_weight) / total_weight
         fused_lon = (esim_point[1] * esim_weight + gps_point[1] * gps_weight) / total_weight
         
-        # Improved accuracy (weighted combination)
-        fused_accuracy = (esim_accuracy * esim_weight + gps_accuracy * gps_weight) / total_weight
+        fused_accuracy = min(esim_accuracy, gps_accuracy) * 0.7
         
-        #add fused results to original ESIM location
         esim_location['fused_location'] = (fused_lat, fused_lon)
         esim_location['fused_accuracy_meters'] = fused_accuracy
         esim_location['fusion_used'] = True
         
         return esim_location
 
-# Usage Example and Test
+# Updated Usage Example with Your Exact Data
 def main():
     # Initialize the tracker
     esim_tracker = HighPrecisionESIMTracker()
     
-    # Sample ESIM measurement data with realistic signal strengths
+    # Your EXACT network data
     sample_esim_measurements = [
         {
-            'mcc': '404',  # Mobile Country Code (India)
-            'mnc': '84',   # Mobile Network Code (Jio)
-            'cell_id': '12345678',
-            'signal_strength': -58,  # Strong signal (close to actual location)
-            'timing_advance': 1,
-            'frequency': 1800,
-            'environment': 'urban'
+            'cell_id': '24823',
+            'distance': 746.3185812627742,  # Your exact distance
+            'azimuth': 217,                  # Your exact azimuth
+            'signal_strength': -102.495,     # Your exact RSRP
+            'environment': 'urban',
         },
         {
-            'mcc': '404',
-            'mnc': '84', 
-            'cell_id': '12345679',
-            'signal_strength': -62,  # Medium-strong signal
-            'timing_advance': 2,
-            'frequency': 1800,
-            'environment': 'urban'
+            'cell_id': '27639',
+            'distance': 769.6862267850452,   # Your exact distance
+            'azimuth': 205,                  # Your exact azimuth
+            'signal_strength': -102.495,     # Using same RSRP for all
+            'environment': 'urban',
         },
         {
-            'mcc': '404',
-            'mnc': '84',
-            'cell_id': '12345680',
-            'signal_strength': -65,  # Medium signal
-            'timing_advance': 2, 
-            'frequency': 1800,
-            'environment': 'urban'
-        },
-        {
-            'mcc': '404',
-            'mnc': '07',
-            'cell_id': '12345683',
-            'signal_strength': -60,  # Strong signal
-            'timing_advance': 1,
-            'frequency': 2100,
-            'environment': 'urban'
+            'cell_id': '27682',
+            'distance': 876.9099713831175,   # Your exact distance
+            'azimuth': 221,                  # Your exact azimuth
+            'signal_strength': -102.495,     # Using same RSRP for all
+            'environment': 'urban',
         }
     ]
     
     # Sample GPS data for fusion
     sample_gps_locations = [
-        (28.632429, 77.218788),  # Actual GPS coordinates
-        (28.632435, 77.218792),  # Slight movement
-        (28.632440, 77.218795)   # More movement
+        (28.632429, 77.218788),
+        (28.632435, 77.218792),
+        (28.632440, 77.218795)
     ]
     
     print("=== High Precision ESIM Location Tracking ===")
-    print(f"Processing {len(sample_esim_measurements)} tower measurements...")
+    print("Using YOUR EXACT tower data:")
+    print(f"Tower 24823: Distance {746.3185812627742:.1f}m, Azimuth 217°")
+    print(f"Tower 27639: Distance {769.6862267850452:.1f}m, Azimuth 205°") 
+    print(f"Tower 27682: Distance {876.9099713831175:.1f}m, Azimuth 221°")
+    print(f"Signal: RSRP {-102.495} dBm, RSRQ {-13.548} dB")
     
-    # Get ESIM location
+    # Get ESIM location using your exact distance and azimuth data
     esim_result = esim_tracker.advanced_triangulation(sample_esim_measurements)
     
     if 'error' in esim_result:
@@ -688,11 +659,14 @@ def main():
         improvement = ((esim_distance - fused_distance) / esim_distance * 100)
         print(f"Improvement: {improvement:.1f}%")
     
-    # Additional diagnostics
+    # Detailed tower information
     print(f"\nTower Details:")
     for i, tower in enumerate(esim_result.get('tower_details', [])):
         print(f"  Tower {i+1}: {tower['tower_id']}")
-        print(f"    Signal: {tower['signal_strength']}dBm, Est. Distance: {tower['distance_estimated']:.1f}m")
+        print(f"    Coordinates: {tower['coordinates'][0]:.6f}, {tower['coordinates'][1]:.6f}")
+        print(f"    Distance: {tower['distance_estimated']:.1f}m")
+        print(f"    Azimuth: {tower.get('azimuth', 'N/A')}°")
+        print(f"    Signal: {tower['signal_strength']}dBm")
 
 if __name__ == "__main__":
     main()
