@@ -11,11 +11,57 @@ import json
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Your existing triangulation code (keep the same as before)
+# GraphHopper API Configuration
+GRAPHHOPPER_API_KEY = "YOUR_GRAPHHOPPER_API_KEY" # Replace with your actual key
+
+class RoadPathFinder:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://graphhopper.com/api/1/route"
+    
+    def get_route_between_points(self, points: List[Tuple[float, float]]) -> Dict[str, Any]:
+        """Get road route between multiple points using GraphHopper API"""
+        try:
+            # Convert points to GraphHopper format
+            point_str = "&".join([f"point={lat},{lon}" for lat, lon in points])
+            
+            url = f"{self.base_url}?{point_str}&vehicle=car&locale=en&key={self.api_key}&instructions=true&calc_points=true"
+            
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            if 'paths' in data and len(data['paths']) > 0:
+                path = data['paths'][0]
+                return {
+                    'points': self.extract_route_points(path),
+                    'distance': path.get('distance', 0),  # meters
+                    'time': path.get('time', 0),  # milliseconds
+                    'instructions': path.get('instructions', []),
+                    'success': True
+                }
+            else:
+                return {'success': False, 'error': 'No route found'}
+                
+        except Exception as e:
+            print(f"GraphHopper API error: {e}")
+            return {'success': False, 'error': str(e)}
+    
+    def extract_route_points(self, path: Dict) -> List[Tuple[float, float]]:
+        """Extract coordinates from GraphHopper response"""
+        points = []
+        if 'points' in path and 'coordinates' in path['points']:
+            for coord in path['points']['coordinates']:
+                points.append((coord[1], coord[0]))  # GraphHopper uses [lon, lat]
+        return points
+
+# Your existing triangulation code (keep the same)
 class HighPrecisionESIMTracker:
     def __init__(self):
         self.cell_tower_database = self.initialize_tower_database()
         self.signal_propagation_models = self.initialize_propagation_models()
+        self.road_finder = RoadPathFinder(GRAPHHOPPER_API_KEY)
     
     def initialize_tower_database(self) -> Dict:
         """Initialize database with your specific towers"""
@@ -92,6 +138,39 @@ class HighPrecisionESIMTracker:
         tower_lon = ref_lon + delta_lon
         
         return (tower_lat, tower_lon)
+    
+    def get_road_paths(self, calculated_location: Tuple[float, float], 
+                      towers: List[Dict], input_location: Tuple[float, float]) -> Dict[str, Any]:
+        """Get road paths between calculated location and towers"""
+        road_paths = {}
+        
+        # Path from input location to calculated location
+        points = [input_location, calculated_location]
+        route = self.road_finder.get_route_between_points(points)
+        if route['success']:
+            road_paths['input_to_calculated'] = route
+        
+        # Paths from calculated location to each tower
+        for i, tower in enumerate(towers):
+            points = [calculated_location, tower['coordinates']]
+            route = self.road_finder.get_route_between_points(points)
+            if route['success']:
+                road_paths[f'calculated_to_tower_{i+1}'] = {
+                    'route': route,
+                    'tower_id': tower['id'],
+                    'tower_coords': tower['coordinates']
+                }
+        
+        # Path connecting all towers (if we have at least 2 towers)
+        if len(towers) >= 2:
+            tower_points = [tower['coordinates'] for tower in towers]
+            # Close the loop by adding first tower at the end
+            tower_points.append(towers[0]['coordinates'])
+            route = self.road_finder.get_route_between_points(tower_points)
+            if route['success']:
+                road_paths['tower_loop'] = route
+        
+        return road_paths
     
     def advanced_triangulation(self, tower_measurements: List[Dict], 
                              reference_location: Optional[Tuple[float, float]] = None,
@@ -190,6 +269,15 @@ class HighPrecisionESIMTracker:
                 'is_improved': improvement > 0
             }
         
+        # Get road paths for visualization
+        if final_result.get('estimated_location'):
+            road_paths = self.get_road_paths(
+                final_result['estimated_location'], 
+                detailed_towers, 
+                ref_point
+            )
+            final_result['road_paths'] = road_paths
+        
         # Add detailed information for UI
         final_result['detailed_towers'] = detailed_towers
         final_result['input_location'] = ref_point
@@ -206,7 +294,6 @@ class HighPrecisionESIMTracker:
     
     def calculate_gps_accuracy(self) -> float:
         """Calculate typical GPS accuracy based on conditions"""
-        # Simulate GPS accuracy (typically 5-15 meters for good conditions)
         return 8.0  # meters
     
     def calculate_confidence_from_signal(self, signal_strength: float) -> float:
@@ -520,12 +607,13 @@ async def serve_triangulation_ui():
                 right: 10px; 
                 z-index: 10000; 
             }
+            .road-path { stroke-width: 6; opacity: 0.8; }
         </style>
     </head>
     <body class="bg-gray-100 min-h-screen p-4">
         <div class="max-w-7xl mx-auto">
             <h1 class="text-3xl font-bold text-center text-gray-800 mb-2">ESIM Triangulation Visualizer</h1>
-            <p class="text-center text-gray-600 mb-6">Visualize cell tower triangulation with GPS comparison</p>
+            <p class="text-center text-gray-600 mb-6">Visualize cell tower triangulation with Road Paths</p>
             
             <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <!-- Input Panel -->
@@ -609,6 +697,13 @@ async def serve_triangulation_ui():
                     </div>
 
                     <div class="mt-6">
+                        <h3 class="font-semibold text-gray-700 mb-2">Road Paths</h3>
+                        <div id="roadPathsInfo" class="space-y-2">
+                            <!-- Road paths info will be populated here -->
+                        </div>
+                    </div>
+
+                    <div class="mt-6">
                         <h3 class="font-semibold text-gray-700 mb-2">Algorithm Results</h3>
                         <div id="methodsResults" class="space-y-2">
                             <!-- Method results will be populated here -->
@@ -634,8 +729,11 @@ async def serve_triangulation_ui():
                             <span style="color: #44FF44">📍 Calculated Location</span><br>
                             <span style="color: #4444FF">📍 GPS Location</span><br>
                             <span style="color: #FF6B00">📍 Algorithm Results</span><br>
+                            <span style="color: purple">📡 Tower Location</span><br>
                             <span style="color: blue">⭕ Tower Range</span><br>
-                            <span style="color: purple">📡 Tower Location</span>
+                            <span style="color: #00FF00">🟢 Road: Input → Calculated</span><br>
+                            <span style="color: #FF00FF">🟣 Road: Calculated → Towers</span><br>
+                            <span style="color: #FFA500">🟠 Road: Tower Loop</span>
                         </p>
                     </div>
                 </div>
@@ -666,6 +764,12 @@ async def serve_triangulation_ui():
                     </div>
                 </div>
                 <div class="mt-6">
+                    <h3 class="font-semibold text-gray-700 mb-2">Road Paths</h3>
+                    <div id="fullscreenRoadPathsInfo" class="space-y-2">
+                        <!-- Road paths info will be populated here -->
+                    </div>
+                </div>
+                <div class="mt-6">
                     <h3 class="font-semibold text-gray-700 mb-2">Algorithm Results</h3>
                     <div id="fullscreenMethodsResults" class="space-y-2">
                         <!-- Method results will be populated here -->
@@ -687,6 +791,8 @@ async def serve_triangulation_ui():
             let fullscreenMarkers = [];
             let circles = [];
             let fullscreenCircles = [];
+            let roadPaths = [];
+            let fullscreenRoadPaths = [];
             let towers = [];
             let currentData = null;
 
@@ -705,23 +811,28 @@ async def serve_triangulation_ui():
                 }).addTo(fullscreenMap);
             }
 
-            function clearMap(targetMap = map, clearMarkers = true, clearCircles = true) {
-                if (clearMarkers) {
-                    markers.forEach(marker => targetMap.removeLayer(marker));
-                    markers = [];
-                }
-                if (clearCircles) {
-                    circles.forEach(circle => targetMap.removeLayer(circle));
-                    circles = [];
-                }
+            function clearMap() {
+                // Clear markers
+                markers.forEach(marker => map.removeLayer(marker));
+                markers = [];
+                
+                // Clear circles
+                circles.forEach(circle => map.removeLayer(circle));
+                circles = [];
+                
+                // Clear road paths
+                roadPaths.forEach(path => map.removeLayer(path));
+                roadPaths = [];
             }
 
             function clearFullscreenMap() {
                 if (fullscreenMap) {
                     fullscreenMarkers.forEach(marker => fullscreenMap.removeLayer(marker));
                     fullscreenCircles.forEach(circle => fullscreenMap.removeLayer(circle));
+                    fullscreenRoadPaths.forEach(path => fullscreenMap.removeLayer(path));
                     fullscreenMarkers = [];
                     fullscreenCircles = [];
+                    fullscreenRoadPaths = [];
                 }
             }
 
@@ -759,6 +870,26 @@ async def serve_triangulation_ui():
                     circles.push(circle);
                 }
                 return circle;
+            }
+
+            function addRoadPath(points, color, popup, targetMap = map, isFullscreen = false) {
+                const polyline = L.polyline(points, {
+                    color: color,
+                    weight: 6,
+                    opacity: 0.8,
+                    className: 'road-path'
+                }).addTo(targetMap);
+                
+                if (popup) {
+                    polyline.bindPopup(popup);
+                }
+                
+                if (isFullscreen) {
+                    fullscreenRoadPaths.push(polyline);
+                } else {
+                    roadPaths.push(polyline);
+                }
+                return polyline;
             }
 
             function updateTowersList() {
@@ -847,6 +978,7 @@ async def serve_triangulation_ui():
             function displayResults(data) {
                 const resultsDiv = document.getElementById('resultsContent');
                 const gpsDiv = document.getElementById('gpsComparison');
+                const roadsDiv = document.getElementById('roadPathsInfo');
                 const methodsDiv = document.getElementById('methodsResults');
                 const towersDiv = document.getElementById('towerDetails');
 
@@ -855,12 +987,13 @@ async def serve_triangulation_ui():
                     return;
                 }
 
-                updateResultsDisplay(resultsDiv, gpsDiv, methodsDiv, towersDiv, data);
+                updateResultsDisplay(resultsDiv, gpsDiv, roadsDiv, methodsDiv, towersDiv, data);
             }
 
             function displayFullscreenResults(data) {
                 const resultsDiv = document.getElementById('fullscreenResultsContent');
                 const gpsDiv = document.getElementById('fullscreenGpsComparison');
+                const roadsDiv = document.getElementById('fullscreenRoadPathsInfo');
                 const methodsDiv = document.getElementById('fullscreenMethodsResults');
                 const towersDiv = document.getElementById('fullscreenTowerDetails');
 
@@ -869,10 +1002,10 @@ async def serve_triangulation_ui():
                     return;
                 }
 
-                updateResultsDisplay(resultsDiv, gpsDiv, methodsDiv, towersDiv, data);
+                updateResultsDisplay(resultsDiv, gpsDiv, roadsDiv, methodsDiv, towersDiv, data);
             }
 
-            function updateResultsDisplay(resultsDiv, gpsDiv, methodsDiv, towersDiv, data) {
+            function updateResultsDisplay(resultsDiv, gpsDiv, roadsDiv, methodsDiv, towersDiv, data) {
                 // Main results
                 resultsDiv.innerHTML = `
                     <div class="grid grid-cols-2 gap-4">
@@ -923,6 +1056,57 @@ async def serve_triangulation_ui():
                     gpsDiv.innerHTML = '<div class="bg-gray-50 p-3 rounded-lg text-gray-500 text-center">No GPS data provided</div>';
                 }
 
+                // Road Paths Information
+                if (data.road_paths) {
+                    roadsDiv.innerHTML = '';
+                    let pathCount = 0;
+                    
+                    if (data.road_paths.input_to_calculated) {
+                        const route = data.road_paths.input_to_calculated;
+                        const pathDiv = document.createElement('div');
+                        pathDiv.className = 'bg-green-50 p-2 rounded text-sm';
+                        pathDiv.innerHTML = `
+                            <strong>🚗 Input → Calculated</strong><br>
+                            Distance: ${(route.distance / 1000).toFixed(2)} km<br>
+                            Time: ${Math.round(route.time / 60000)} minutes
+                        `;
+                        roadsDiv.appendChild(pathDiv);
+                        pathCount++;
+                    }
+
+                    Object.entries(data.road_paths).forEach(([key, pathInfo]) => {
+                        if (key.startsWith('calculated_to_tower_')) {
+                            const pathDiv = document.createElement('div');
+                            pathDiv.className = 'bg-purple-50 p-2 rounded text-sm';
+                            pathDiv.innerHTML = `
+                                <strong>📡 Calculated → Tower ${pathInfo.tower_id}</strong><br>
+                                Distance: ${(pathInfo.route.distance / 1000).toFixed(2)} km
+                            `;
+                            roadsDiv.appendChild(pathDiv);
+                            pathCount++;
+                        }
+                    });
+
+                    if (data.road_paths.tower_loop) {
+                        const route = data.road_paths.tower_loop;
+                        const pathDiv = document.createElement('div');
+                        pathDiv.className = 'bg-orange-50 p-2 rounded text-sm';
+                        pathDiv.innerHTML = `
+                            <strong>🔄 Tower Loop Route</strong><br>
+                            Distance: ${(route.distance / 1000).toFixed(2)} km<br>
+                            Connects all ${data.number_of_towers} towers
+                        `;
+                        roadsDiv.appendChild(pathDiv);
+                        pathCount++;
+                    }
+
+                    if (pathCount === 0) {
+                        roadsDiv.innerHTML = '<div class="bg-gray-50 p-3 rounded-lg text-gray-500 text-center">No road paths available</div>';
+                    }
+                } else {
+                    roadsDiv.innerHTML = '<div class="bg-gray-50 p-3 rounded-lg text-gray-500 text-center">No road paths calculated</div>';
+                }
+
                 // Method results
                 if (data.methods_results) {
                     methodsDiv.innerHTML = '';
@@ -957,7 +1141,7 @@ async def serve_triangulation_ui():
 
             function visualizeOnMap(data, refLat, refLon, gpsLat, gpsLon) {
                 // Clear both maps
-                clearMap(map, true, true);
+                clearMap();
                 clearFullscreenMap();
 
                 // Add input location
@@ -1010,6 +1194,37 @@ async def serve_triangulation_ui():
                             addCircle(tower.coordinates[0], tower.coordinates[1], tower.distance, 'blue', fullscreenMap, true);
                         }
                     });
+                }
+
+                // Add road paths
+                if (data.road_paths) {
+                    // Input to Calculated path (Green)
+                    if (data.road_paths.input_to_calculated && data.road_paths.input_to_calculated.points.length > 0) {
+                        const route = data.road_paths.input_to_calculated;
+                        addRoadPath(route.points, '#00FF00', 
+                            `<strong>Input → Calculated Route</strong><br>Distance: ${(route.distance / 1000).toFixed(2)} km<br>Time: ${Math.round(route.time / 60000)} min`, map);
+                        if (fullscreenMap) addRoadPath(route.points, '#00FF00', 
+                            `<strong>Input → Calculated Route</strong><br>Distance: ${(route.distance / 1000).toFixed(2)} km<br>Time: ${Math.round(route.time / 60000)} min`, fullscreenMap, true);
+                    }
+
+                    // Calculated to Towers paths (Magenta)
+                    Object.entries(data.road_paths).forEach(([key, pathInfo]) => {
+                        if (key.startsWith('calculated_to_tower_') && pathInfo.route.points.length > 0) {
+                            addRoadPath(pathInfo.route.points, '#FF00FF',
+                                `<strong>Calculated → Tower ${pathInfo.tower_id}</strong><br>Distance: ${(pathInfo.route.distance / 1000).toFixed(2)} km`, map);
+                            if (fullscreenMap) addRoadPath(pathInfo.route.points, '#FF00FF',
+                                `<strong>Calculated → Tower ${pathInfo.tower_id}</strong><br>Distance: ${(pathInfo.route.distance / 1000).toFixed(2)} km`, fullscreenMap, true);
+                        }
+                    });
+
+                    // Tower loop path (Orange)
+                    if (data.road_paths.tower_loop && data.road_paths.tower_loop.points.length > 0) {
+                        const route = data.road_paths.tower_loop;
+                        addRoadPath(route.points, '#FFA500',
+                            `<strong>Tower Loop Route</strong><br>Distance: ${(route.distance / 1000).toFixed(2)} km<br>Connects all ${data.number_of_towers} towers`, map);
+                        if (fullscreenMap) addRoadPath(route.points, '#FFA500',
+                            `<strong>Tower Loop Route</strong><br>Distance: ${(route.distance / 1000).toFixed(2)} km<br>Connects all ${data.number_of_towers} towers`, fullscreenMap, true);
+                    }
                 }
 
                 // Fit maps to show all points
@@ -1098,6 +1313,8 @@ async def serve_triangulation_ui():
                     document.getElementById('fullscreenResultsContent').innerHTML = '<div class="text-center text-gray-500"><p>Calculate triangulation to see results</p></div>';
                     document.getElementById('gpsComparison').innerHTML = '';
                     document.getElementById('fullscreenGpsComparison').innerHTML = '';
+                    document.getElementById('roadPathsInfo').innerHTML = '';
+                    document.getElementById('fullscreenRoadPathsInfo').innerHTML = '';
                     document.getElementById('methodsResults').innerHTML = '';
                     document.getElementById('fullscreenMethodsResults').innerHTML = '';
                     document.getElementById('towerDetails').innerHTML = '';
