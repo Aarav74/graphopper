@@ -7,91 +7,94 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Tuple, Dict, Any, Optional
 import json
+from scipy.optimize import minimize
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# GraphHopper API Configuration
-GRAPHHOPPER_API_KEY = "YOUR_GRAPHHOPPER_API_KEY" # Replace with your actual key
-
-class RoadPathFinder:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.base_url = "https://graphhopper.com/api/1/route"
-    
-    def get_route_between_points(self, points: List[Tuple[float, float]]) -> Dict[str, Any]:
-        """Get road route between multiple points using GraphHopper API"""
-        try:
-            # Convert points to GraphHopper format
-            point_str = "&".join([f"point={lat},{lon}" for lat, lon in points])
-            
-            url = f"{self.base_url}?{point_str}&vehicle=car&locale=en&key={self.api_key}&instructions=true&calc_points=true"
-            
-            response = requests.get(url, timeout=30)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            if 'paths' in data and len(data['paths']) > 0:
-                path = data['paths'][0]
-                return {
-                    'points': self.extract_route_points(path),
-                    'distance': path.get('distance', 0),  # meters
-                    'time': path.get('time', 0),  # milliseconds
-                    'instructions': path.get('instructions', []),
-                    'success': True
-                }
-            else:
-                return {'success': False, 'error': 'No route found'}
-                
-        except Exception as e:
-            print(f"GraphHopper API error: {e}")
-            return {'success': False, 'error': str(e)}
-    
-    def extract_route_points(self, path: Dict) -> List[Tuple[float, float]]:
-        """Extract coordinates from GraphHopper response"""
-        points = []
-        if 'points' in path and 'coordinates' in path['points']:
-            for coord in path['points']['coordinates']:
-                points.append((coord[1], coord[0]))  # GraphHopper uses [lon, lat]
-        return points
-
-# Your existing triangulation code (keep the same)
+# Your existing triangulation code with enhanced database
 class HighPrecisionESIMTracker:
     def __init__(self):
         self.cell_tower_database = self.initialize_tower_database()
         self.signal_propagation_models = self.initialize_propagation_models()
-        self.road_finder = RoadPathFinder(GRAPHHOPPER_API_KEY)
+        self.highway_points = self.initialize_highway_points()
+    
+    def initialize_highway_points(self) -> List[Dict]:
+        """Initialize all highway test points with their data"""
+        return [
+            {'lat': 28.613939, 'lon': 77.229508, 'name': 'Point 1: Dhaula Kuan (Delhi)'},
+            {'lat': 28.556112, 'lon': 77.250834, 'name': 'Point 2: IGI Airport'},
+            {'lat': 28.459500, 'lon': 77.026600, 'name': 'Point 3: HUDA City Center'},
+            {'lat': 28.521456, 'lon': 77.265789, 'name': 'Point 4: Kherki Daula'},
+            {'lat': 28.489123, 'lon': 77.278901, 'name': 'Point 5: IMT Manesar'},
+            {'lat': 28.467890, 'lon': 77.282345, 'name': 'Point 6: Behror Border'},
+            {'lat': 28.445678, 'lon': 77.293456, 'name': 'Point 7: Kotputli'},
+            {'lat': 28.423456, 'lon': 77.298765, 'name': 'Point 8: Neemrana'},
+            {'lat': 28.401234, 'lon': 77.306789, 'name': 'Point 9: Shahpura'},
+            {'lat': 28.378901, 'lon': 77.315678, 'name': 'Point 10: Jaipur Outskirts'}
+        ]
     
     def initialize_tower_database(self) -> Dict:
-        """Initialize database with your specific towers"""
+        """Initialize database with all your highway towers"""
         return {
-            '24823': {
-                'lat': 28.639500, 
-                'lon': 77.224800, 
-                'type': '4G', 
-                'height': 35,
-                'operator': 'JIO',
-                'frequency': 1800
-            },
-            '27639': {
-                'lat': 28.637200, 
-                'lon': 77.222500, 
-                'type': '4G', 
-                'height': 32,
-                'operator': 'JIO', 
-                'frequency': 1800
-            },
-            '27682': {
-                'lat': 28.640800, 
-                'lon': 77.226200, 
-                'type': '4G', 
-                'height': 40,
-                'operator': 'JIO',
-                'frequency': 1800
-            },
-            '12345678': {'lat': 28.632400, 'lon': 77.218800, 'type': '4G', 'height': 35},
-            '12345679': {'lat': 28.631500, 'lon': 77.217500, 'type': '4G', 'height': 32},
+            # Delhi-Jaipur Highway Towers
+            
+            # Point 1: 28.613939, 77.229508
+            '35382': {'lat': 28.620000, 'lon': 77.235000, 'type': '4G', 'height': 35, 'operator': 'JIO'},
+            '35383': {'lat': 28.621000, 'lon': 77.236000, 'type': '4G', 'height': 32, 'operator': 'JIO'},
+            '10695': {'lat': 28.619500, 'lon': 77.234500, 'type': '4G', 'height': 40, 'operator': 'AIRTEL'},
+            
+            # Point 2: 28.556112, 77.250834
+            '55454': {'lat': 28.557000, 'lon': 77.252000, 'type': '4G', 'height': 38, 'operator': 'JIO'},
+            '52796': {'lat': 28.555000, 'lon': 77.249000, 'type': '4G', 'height': 42, 'operator': 'AIRTEL'},
+            '55443': {'lat': 28.558000, 'lon': 77.251000, 'type': '4G', 'height': 35, 'operator': 'VI'},
+            
+            # Point 3: 28.459500, 77.026600
+            '55136': {'lat': 28.461000, 'lon': 77.028000, 'type': '4G', 'height': 45, 'operator': 'JIO'},
+            '54485': {'lat': 28.458000, 'lon': 77.025000, 'type': '4G', 'height': 38, 'operator': 'AIRTEL'},
+            '55168': {'lat': 28.460000, 'lon': 77.027000, 'type': '4G', 'height': 40, 'operator': 'VI'},
+            
+            # Point 4: 28.521456, 77.265789
+            '53154': {'lat': 28.523000, 'lon': 77.267000, 'type': '4G', 'height': 36, 'operator': 'JIO'},
+            '50368': {'lat': 28.520000, 'lon': 77.264000, 'type': '4G', 'height': 42, 'operator': 'AIRTEL'},
+            '55260': {'lat': 28.522000, 'lon': 77.266000, 'type': '4G', 'height': 38, 'operator': 'VI'},
+            
+            # Point 5: 28.489123, 77.278901
+            '7359': {'lat': 28.491000, 'lon': 77.280000, 'type': '4G', 'height': 35, 'operator': 'JIO'},
+            '52373': {'lat': 28.488000, 'lon': 77.277000, 'type': '4G', 'height': 44, 'operator': 'AIRTEL'},
+            '3802': {'lat': 28.490000, 'lon': 77.279000, 'type': '4G', 'height': 40, 'operator': 'VI'},
+            
+            # Point 6: 28.467890, 77.282345
+            '53285': {'lat': 28.469000, 'lon': 77.284000, 'type': '4G', 'height': 38, 'operator': 'JIO'},
+            '24668': {'lat': 28.466000, 'lon': 77.281000, 'type': '4G', 'height': 42, 'operator': 'AIRTEL'},
+            '53864': {'lat': 28.468000, 'lon': 77.283000, 'type': '4G', 'height': 45, 'operator': 'VI'},
+            
+            # Point 7: 28.445678, 77.293456
+            '27915': {'lat': 28.447000, 'lon': 77.295000, 'type': '4G', 'height': 36, 'operator': 'JIO'},
+            '56190': {'lat': 28.444000, 'lon': 77.292000, 'type': '4G', 'height': 40, 'operator': 'AIRTEL'},
+            '55770': {'lat': 28.446000, 'lon': 77.294000, 'type': '4G', 'height': 38, 'operator': 'VI'},
+            
+            # Point 8: 28.423456, 77.298765
+            '3570': {'lat': 28.425000, 'lon': 77.300000, 'type': '4G', 'height': 42, 'operator': 'JIO'},
+            '7048': {'lat': 28.422000, 'lon': 77.297000, 'type': '4G', 'height': 35, 'operator': 'AIRTEL'},
+            '50628': {'lat': 28.424000, 'lon': 77.299000, 'type': '4G', 'height': 40, 'operator': 'VI'},
+            
+            # Point 9: 28.401234, 77.306789
+            '51288': {'lat': 28.403000, 'lon': 77.308000, 'type': '4G', 'height': 38, 'operator': 'JIO'},
+            '51426': {'lat': 28.400000, 'lon': 77.305000, 'type': '4G', 'height': 44, 'operator': 'AIRTEL'},
+            '56232': {'lat': 28.402000, 'lon': 77.307000, 'type': '4G', 'height': 36, 'operator': 'VI'},
+            
+            # Point 10: 28.378901, 77.315678
+            '56209': {'lat': 28.380000, 'lon': 77.317000, 'type': '4G', 'height': 40, 'operator': 'JIO'},
+            '50648': {'lat': 28.377000, 'lon': 77.314000, 'type': '4G', 'height': 38, 'operator': 'AIRTEL'},
+            '3768': {'lat': 28.379000, 'lon': 77.316000, 'type': '4G', 'height': 42, 'operator': 'VI'},
+            
+            # Original towers
+            '24823': {'lat': 28.639500, 'lon': 77.224800, 'type': '4G', 'height': 35, 'operator': 'JIO'},
+            '27639': {'lat': 28.637200, 'lon': 77.222500, 'type': '4G', 'height': 32, 'operator': 'JIO'},
+            '27682': {'lat': 28.640800, 'lon': 77.226200, 'type': '4G', 'height': 40, 'operator': 'JIO'},
+            '12345678': {'lat': 28.632400, 'lon': 77.218800, 'type': '4G', 'height': 35, 'operator': 'JIO'},
+            '12345679': {'lat': 28.631500, 'lon': 77.217500, 'type': '4G', 'height': 32, 'operator': 'JIO'},
         }
     
     def initialize_propagation_models(self) -> Dict:
@@ -139,38 +142,171 @@ class HighPrecisionESIMTracker:
         
         return (tower_lat, tower_lon)
     
-    def get_road_paths(self, calculated_location: Tuple[float, float], 
-                      towers: List[Dict], input_location: Tuple[float, float]) -> Dict[str, Any]:
-        """Get road paths between calculated location and towers"""
-        road_paths = {}
+    def get_tower_measurements_for_location(self, location: Tuple[float, float]) -> List[Dict]:
+        """Get tower measurements for a specific highway location"""
+        highway_data = {
+            (28.613939, 77.229508): [
+                {'cell_id': '35382', 'distance': 703.9025590543764, 'azimuth': 286, 'signal_strength': -98.914},
+                {'cell_id': '35383', 'distance': 706.0192250487871, 'azimuth': 292, 'signal_strength': -98.914},
+                {'cell_id': '10695', 'distance': 710.0020347954293, 'azimuth': 284, 'signal_strength': -98.914}
+            ],
+            (28.556112, 77.250834): [
+                {'cell_id': '55454', 'distance': 201.2857064577612, 'azimuth': 81, 'signal_strength': -105.817},
+                {'cell_id': '52796', 'distance': 391.73491761298226, 'azimuth': 198, 'signal_strength': -105.817},
+                {'cell_id': '55443', 'distance': 426.0350469144528, 'azimuth': 12, 'signal_strength': -105.817}
+            ],
+            (28.459500, 77.026600): [
+                {'cell_id': '55136', 'distance': 204.20375635832463, 'azimuth': 187, 'signal_strength': -106.442},
+                {'cell_id': '54485', 'distance': 262.0960388885914, 'azimuth': 236, 'signal_strength': -106.442},
+                {'cell_id': '55168', 'distance': 264.4220763163507, 'azimuth': 274, 'signal_strength': -106.442}
+            ],
+            (28.521456, 77.265789): [
+                {'cell_id': '53154', 'distance': 263.1323098088868, 'azimuth': 203, 'signal_strength': -100.482},
+                {'cell_id': '50368', 'distance': 281.12730283275584, 'azimuth': 160, 'signal_strength': -100.482},
+                {'cell_id': '55260', 'distance': 488.25719642382126, 'azimuth': 286, 'signal_strength': -100.482}
+            ],
+            (28.489123, 77.278901): [
+                {'cell_id': '7359', 'distance': 496.6772634247112, 'azimuth': 69, 'signal_strength': -102.697},
+                {'cell_id': '52373', 'distance': 615.4148156096423, 'azimuth': 337, 'signal_strength': -102.697},
+                {'cell_id': '3802', 'distance': 644.3205753228746, 'azimuth': 79, 'signal_strength': -102.697}
+            ],
+            (28.467890, 77.282345): [
+                {'cell_id': '53285', 'distance': 910.5672761005306, 'azimuth': 98, 'signal_strength': -83.137},
+                {'cell_id': '24668', 'distance': 990.2529396727788, 'azimuth': 157, 'signal_strength': -83.137},
+                {'cell_id': '53864', 'distance': 1237.6686040470163, 'azimuth': 227, 'signal_strength': -83.137}
+            ],
+            (28.445678, 77.293456): [
+                {'cell_id': '27915', 'distance': 999.4283137159614, 'azimuth': 302, 'signal_strength': -105.360},
+                {'cell_id': '56190', 'distance': 1013.5452921669805, 'azimuth': 98, 'signal_strength': -105.360},
+                {'cell_id': '55770', 'distance': 1084.1657390634791, 'azimuth': 114, 'signal_strength': -105.360}
+            ],
+            (28.423456, 77.298765): [
+                {'cell_id': '3570', 'distance': 320.28367491904737, 'azimuth': 15, 'signal_strength': -103.790},
+                {'cell_id': '7048', 'distance': 762.189837448132, 'azimuth': 342, 'signal_strength': -103.790},
+                {'cell_id': '50628', 'distance': 884.244160863876, 'azimuth': 244, 'signal_strength': -103.790}
+            ],
+            (28.401234, 77.306789): [
+                {'cell_id': '51288', 'distance': 178.2564647031069, 'azimuth': 185, 'signal_strength': -96.883},
+                {'cell_id': '51426', 'distance': 330.2042043919641, 'azimuth': 347, 'signal_strength': -96.883},
+                {'cell_id': '56232', 'distance': 413.1734621221455, 'azimuth': 238, 'signal_strength': -96.883}
+            ],
+            (28.378901, 77.315678): [
+                {'cell_id': '56209', 'distance': 364.0810067859212, 'azimuth': 234, 'signal_strength': -107.335},
+                {'cell_id': '50648', 'distance': 531.1432986440477, 'azimuth': 285, 'signal_strength': -107.335},
+                {'cell_id': '3768', 'distance': 913.2758226775524, 'azimuth': 199, 'signal_strength': -107.335}
+            ]
+        }
         
-        # Path from input location to calculated location
-        points = [input_location, calculated_location]
-        route = self.road_finder.get_route_between_points(points)
-        if route['success']:
-            road_paths['input_to_calculated'] = route
+        # Find the closest location in our database
+        min_distance = float('inf')
+        closest_location = None
         
-        # Paths from calculated location to each tower
-        for i, tower in enumerate(towers):
-            points = [calculated_location, tower['coordinates']]
-            route = self.road_finder.get_route_between_points(points)
-            if route['success']:
-                road_paths[f'calculated_to_tower_{i+1}'] = {
-                    'route': route,
-                    'tower_id': tower['id'],
-                    'tower_coords': tower['coordinates']
-                }
+        for loc in highway_data.keys():
+            distance = self.haversine_distance(location, loc)
+            if distance < min_distance:
+                min_distance = distance
+                closest_location = loc
         
-        # Path connecting all towers (if we have at least 2 towers)
-        if len(towers) >= 2:
-            tower_points = [tower['coordinates'] for tower in towers]
-            # Close the loop by adding first tower at the end
-            tower_points.append(towers[0]['coordinates'])
-            route = self.road_finder.get_route_between_points(tower_points)
-            if route['success']:
-                road_paths['tower_loop'] = route
+        if closest_location and min_distance < 5000:  # Within 5km
+            return highway_data[closest_location]
+        else:
+            return []
+    
+    def calculate_complete_highway_triangulation(self) -> Dict[str, Any]:
+        """Calculate triangulation for all highway points and connect them"""
+        print("Calculating triangulation for all highway points...")
         
-        return road_paths
+        all_results = {}
+        road_path = []
+        
+        for point in self.highway_points:
+            location = (point['lat'], point['lon'])
+            print(f"Processing {point['name']} at {location}")
+            
+            # Get tower measurements for this location
+            tower_measurements = self.get_tower_measurements_for_location(location)
+            
+            if not tower_measurements:
+                print(f"  No tower data found for {point['name']}")
+                continue
+            
+            # Perform triangulation
+            result = self.advanced_triangulation(
+                tower_measurements, 
+                reference_location=location,
+                gps_location=location  # Use actual location as GPS for comparison
+            )
+            
+            if 'estimated_location' in result:
+                all_results[point['name']] = result
+                
+                # Add to road path
+                road_path.append({
+                    'name': point['name'],
+                    'original_location': location,
+                    'calculated_location': result['estimated_location'],
+                    'accuracy': result['accuracy_meters'],
+                    'towers_used': len(tower_measurements)
+                })
+                print(f"  ✓ Success - Accuracy: {result['accuracy_meters']:.1f}m")
+            else:
+                print(f"  ✗ Failed - {result.get('error', 'Unknown error')}")
+        
+        # Calculate road statistics
+        total_points = len(road_path)
+        if total_points > 0:
+            avg_accuracy = sum(point['accuracy'] for point in road_path) / total_points
+            total_distance = self.calculate_road_distance(road_path)
+        else:
+            avg_accuracy = 0
+            total_distance = 0
+        
+        return {
+            'complete_highway_analysis': True,
+            'total_points_processed': total_points,
+            'average_accuracy_meters': avg_accuracy,
+            'total_road_distance_km': total_distance,
+            'road_path': road_path,
+            'point_results': all_results,
+            'all_towers': self.get_all_towers_for_highway()
+        }
+    
+    def calculate_road_distance(self, road_path: List[Dict]) -> float:
+        """Calculate total road distance in kilometers"""
+        total_distance = 0
+        for i in range(len(road_path) - 1):
+            point1 = road_path[i]['calculated_location']
+            point2 = road_path[i + 1]['calculated_location']
+            distance = self.haversine_distance(point1, point2) / 1000.0  # Convert to km
+            total_distance += distance
+        return total_distance
+    
+    def get_all_towers_for_highway(self) -> List[Dict]:
+        """Get all towers used in highway analysis"""
+        all_towers = []
+        for point in self.highway_points:
+            location = (point['lat'], point['lon'])
+            tower_measurements = self.get_tower_measurements_for_location(location)
+            
+            for meas in tower_measurements:
+                tower_id = meas['cell_id']
+                if tower_id in self.cell_tower_database:
+                    tower_data = self.cell_tower_database[tower_id]
+                    tower_info = {
+                        'id': tower_id,
+                        'coordinates': (tower_data['lat'], tower_data['lon']),
+                        'type': tower_data['type'],
+                        'operator': tower_data['operator'],
+                        'height': tower_data['height'],
+                        'distance': meas['distance'],
+                        'signal_strength': meas['signal_strength'],
+                        'serves_point': point['name']
+                    }
+                    # Avoid duplicates
+                    if not any(t['id'] == tower_id for t in all_towers):
+                        all_towers.append(tower_info)
+        
+        return all_towers
     
     def advanced_triangulation(self, tower_measurements: List[Dict], 
                              reference_location: Optional[Tuple[float, float]] = None,
@@ -232,6 +368,8 @@ class HighPrecisionESIMTracker:
             })
             valid_towers_count += 1
         
+        print(f"Valid towers processed: {valid_towers_count}")
+        
         if len(towers) < 2:
             return {'error': 'Insufficient towers for triangulation'}
         
@@ -268,15 +406,6 @@ class HighPrecisionESIMTracker:
                 'improvement_percentage': improvement,
                 'is_improved': improvement > 0
             }
-        
-        # Get road paths for visualization
-        if final_result.get('estimated_location'):
-            road_paths = self.get_road_paths(
-                final_result['estimated_location'], 
-                detailed_towers, 
-                ref_point
-            )
-            final_result['road_paths'] = road_paths
         
         # Add detailed information for UI
         final_result['detailed_towers'] = detailed_towers
@@ -564,13 +693,18 @@ class TriangulationRequest(BaseModel):
     gps_latitude: Optional[float] = None
     gps_longitude: Optional[float] = None
 
+class HighwayLocationRequest(BaseModel):
+    latitude: float
+    longitude: float
+    use_gps: bool = False
+
 @app.get("/", response_class=HTMLResponse)
 async def serve_triangulation_ui():
     html_content = """
     <!DOCTYPE html>
     <html>
     <head>
-        <title>ESIM Triangulation Visualizer</title>
+        <title>ESIM Triangulation Visualizer - Highway Analysis</title>
         <script src="https://cdn.tailwindcss.com"></script>
         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -608,70 +742,87 @@ async def serve_triangulation_ui():
                 z-index: 10000; 
             }
             .road-path { stroke-width: 6; opacity: 0.8; }
+            .highway-line { 
+                stroke: #e53e3e; 
+                stroke-width: 4; 
+                stroke-dasharray: 10, 5;
+                opacity: 0.8;
+            }
         </style>
     </head>
     <body class="bg-gray-100 min-h-screen p-4">
         <div class="max-w-7xl mx-auto">
-            <h1 class="text-3xl font-bold text-center text-gray-800 mb-2">ESIM Triangulation Visualizer</h1>
-            <p class="text-center text-gray-600 mb-6">Visualize cell tower triangulation with Road Paths</p>
+            <h1 class="text-3xl font-bold text-center text-gray-800 mb-2">ESIM Triangulation Visualizer - Complete Highway Analysis</h1>
+            <p class="text-center text-gray-600 mb-6">Delhi-Jaipur Highway Route Mapping</p>
             
             <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <!-- Input Panel -->
                 <div class="bg-white rounded-xl shadow-lg p-6">
-                    <h2 class="text-xl font-bold text-gray-800 mb-4">Tower Measurements</h2>
+                    <h2 class="text-xl font-bold text-gray-800 mb-4">Highway Analysis Controls</h2>
                     
                     <div class="space-y-4 mb-4">
                         <div class="grid grid-cols-2 gap-2">
                             <div>
-                                <label class="block text-sm font-medium text-gray-700">Reference Latitude</label>
-                                <input type="number" id="refLat" value="28.632400" step="any" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border">
+                                <label class="block text-sm font-medium text-gray-700">Test Latitude</label>
+                                <input type="number" id="testLat" value="28.613939" step="any" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border">
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700">Reference Longitude</label>
-                                <input type="number" id="refLon" value="77.218800" step="any" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border">
+                                <label class="block text-sm font-medium text-gray-700">Test Longitude</label>
+                                <input type="number" id="testLon" value="77.229508" step="any" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border">
                             </div>
                         </div>
                         
-                        <div class="grid grid-cols-2 gap-2">
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700">GPS Latitude (Optional)</label>
-                                <input type="number" id="gpsLat" placeholder="28.632429" step="any" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border">
-                            </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700">GPS Longitude (Optional)</label>
-                                <input type="number" id="gpsLon" placeholder="77.218788" step="any" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border">
-                            </div>
+                        <div class="flex items-center">
+                            <input type="checkbox" id="useGps" class="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200">
+                            <label for="useGps" class="ml-2 text-sm text-gray-700">Use as GPS reference</label>
                         </div>
                     </div>
 
                     <div class="space-y-3 mb-4">
-                        <h3 class="font-semibold text-gray-700">Add Tower Measurement</h3>
-                        <div class="grid grid-cols-2 gap-2">
-                            <input type="text" id="cellId" placeholder="Cell ID" class="rounded-md border-gray-300 shadow-sm p-2 border">
-                            <input type="number" id="distance" placeholder="Distance (m)" step="any" class="rounded-md border-gray-300 shadow-sm p-2 border">
+                        <h3 class="font-semibold text-gray-700">Quick Test Locations</h3>
+                        <div class="grid grid-cols-1 gap-2">
+                            <button onclick="loadHighwayLocation(28.613939, 77.229508)" class="bg-blue-100 hover:bg-blue-200 text-blue-800 p-2 rounded text-sm text-left">
+                                📍 Point 1: Dhaula Kuan (Delhi)
+                            </button>
+                            <button onclick="loadHighwayLocation(28.556112, 77.250834)" class="bg-blue-100 hover:bg-blue-200 text-blue-800 p-2 rounded text-sm text-left">
+                                📍 Point 2: IGI Airport
+                            </button>
+                            <button onclick="loadHighwayLocation(28.459500, 77.026600)" class="bg-blue-100 hover:bg-blue-200 text-blue-800 p-2 rounded text-sm text-left">
+                                📍 Point 3: HUDA City Center
+                            </button>
+                            <button onclick="loadHighwayLocation(28.521456, 77.265789)" class="bg-blue-100 hover:bg-blue-200 text-blue-800 p-2 rounded text-sm text-left">
+                                📍 Point 4: Kherki Daula
+                            </button>
+                            <button onclick="loadHighwayLocation(28.489123, 77.278901)" class="bg-blue-100 hover:bg-blue-200 text-blue-800 p-2 rounded text-sm text-left">
+                                📍 Point 5: IMT Manesar
+                            </button>
+                            <button onclick="loadHighwayLocation(28.467890, 77.282345)" class="bg-blue-100 hover:bg-blue-200 text-blue-800 p-2 rounded text-sm text-left">
+                                📍 Point 6: Behror Border
+                            </button>
+                            <button onclick="loadHighwayLocation(28.445678, 77.293456)" class="bg-blue-100 hover:bg-blue-200 text-blue-800 p-2 rounded text-sm text-left">
+                                📍 Point 7: Kotputli
+                            </button>
+                            <button onclick="loadHighwayLocation(28.423456, 77.298765)" class="bg-blue-100 hover:bg-blue-200 text-blue-800 p-2 rounded text-sm text-left">
+                                📍 Point 8: Neemrana
+                            </button>
+                            <button onclick="loadHighwayLocation(28.401234, 77.306789)" class="bg-blue-100 hover:bg-blue-200 text-blue-800 p-2 rounded text-sm text-left">
+                                📍 Point 9: Shahpura
+                            </button>
+                            <button onclick="loadHighwayLocation(28.378901, 77.315678)" class="bg-blue-100 hover:bg-blue-200 text-blue-800 p-2 rounded text-sm text-left">
+                                📍 Point 10: Jaipur Outskirts
+                            </button>
                         </div>
-                        <div class="grid grid-cols-2 gap-2">
-                            <input type="number" id="azimuth" placeholder="Azimuth (°)" step="any" class="rounded-md border-gray-300 shadow-sm p-2 border">
-                            <input type="number" id="signal" placeholder="Signal (dBm)" value="-102.495" step="any" class="rounded-md border-gray-300 shadow-sm p-2 border">
-                        </div>
-                        <button id="addTowerBtn" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg transition-all">
-                            Add Tower
-                        </button>
-                    </div>
-
-                    <div id="towersList" class="max-h-40 overflow-y-auto space-y-2 mb-4">
-                        <p class="text-sm text-gray-500 text-center">No towers added yet</p>
                     </div>
 
                     <div class="space-y-2">
-                        <button id="calculateBtn" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-4 rounded-lg transition-all">
-                            Calculate Triangulation
+                        <button id="calculateHighwayBtn" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-4 rounded-lg transition-all">
+                            Calculate Single Point
+                        </button>
+                        <button id="calculateCompleteHighwayBtn" class="w-full bg-purple-500 hover:bg-purple-600 text-white font-bold py-3 px-4 rounded-lg transition-all">
+                            🛣️ Analyze Complete Highway
                         </button>
                         <button id="clearBtn" class="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg transition-all">
                             Clear All
-                        </button>
-                        <button id="loadSampleBtn" class="w-full bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 px-4 rounded-lg transition-all">
-                            Load Sample Data
                         </button>
                         <button id="fullscreenBtn" class="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-2 px-4 rounded-lg transition-all">
                             Full Screen View
@@ -681,36 +832,36 @@ async def serve_triangulation_ui():
 
                 <!-- Results Panel -->
                 <div class="bg-white rounded-xl shadow-lg p-6">
-                    <h2 class="text-xl font-bold text-gray-800 mb-4">Triangulation Results</h2>
+                    <h2 class="text-xl font-bold text-gray-800 mb-4">Analysis Results</h2>
                     
                     <div id="resultsContent" class="space-y-4">
                         <div class="text-center text-gray-500">
-                            <p>Calculate triangulation to see results</p>
+                            <p>Select a highway location or analyze complete highway</p>
                         </div>
                     </div>
 
-                    <div class="mt-6">
+                    <div class="mt-6" id="highwayResultsSection" style="display: none;">
+                        <h3 class="font-semibold text-gray-700 mb-2">Highway Analysis</h3>
+                        <div id="highwayResults" class="space-y-2">
+                            <!-- Highway results will be populated here -->
+                        </div>
+                    </div>
+
+                    <div class="mt-6" id="gpsComparisonSection">
                         <h3 class="font-semibold text-gray-700 mb-2">GPS Comparison</h3>
                         <div id="gpsComparison" class="space-y-2">
                             <!-- GPS comparison will be populated here -->
                         </div>
                     </div>
 
-                    <div class="mt-6">
-                        <h3 class="font-semibold text-gray-700 mb-2">Road Paths</h3>
-                        <div id="roadPathsInfo" class="space-y-2">
-                            <!-- Road paths info will be populated here -->
-                        </div>
-                    </div>
-
-                    <div class="mt-6">
+                    <div class="mt-6" id="methodsResultsSection">
                         <h3 class="font-semibold text-gray-700 mb-2">Algorithm Results</h3>
                         <div id="methodsResults" class="space-y-2">
                             <!-- Method results will be populated here -->
                         </div>
                     </div>
 
-                    <div class="mt-6">
+                    <div class="mt-6" id="towerDetailsSection">
                         <h3 class="font-semibold text-gray-700 mb-2">Tower Details</h3>
                         <div id="towerDetails" class="space-y-2">
                             <!-- Tower details will be populated here -->
@@ -720,7 +871,7 @@ async def serve_triangulation_ui():
 
                 <!-- Map Panel -->
                 <div class="bg-white rounded-xl shadow-lg p-6">
-                    <h2 class="text-xl font-bold text-gray-800 mb-4">Visualization Map</h2>
+                    <h2 class="text-xl font-bold text-gray-800 mb-4">Highway Visualization</h2>
                     <div id="map"></div>
                     <div class="mt-4 bg-blue-50 p-3 rounded-lg">
                         <p class="text-sm text-blue-700">
@@ -731,9 +882,7 @@ async def serve_triangulation_ui():
                             <span style="color: #FF6B00">📍 Algorithm Results</span><br>
                             <span style="color: purple">📡 Tower Location</span><br>
                             <span style="color: blue">⭕ Tower Range</span><br>
-                            <span style="color: #00FF00">🟢 Road: Input → Calculated</span><br>
-                            <span style="color: #FF00FF">🟣 Road: Calculated → Towers</span><br>
-                            <span style="color: #FFA500">🟠 Road: Tower Loop</span>
+                            <span style="color: #e53e3e">🛣️ Highway Route</span>
                         </p>
                     </div>
                 </div>
@@ -751,31 +900,31 @@ async def serve_triangulation_ui():
                 <div id="fullscreenMap" class="w-full h-full"></div>
             </div>
             <div class="fullscreen-results-container bg-gray-50 rounded-lg">
-                <h2 class="text-2xl font-bold text-gray-800 mb-4">Triangulation Results - Full Screen</h2>
+                <h2 class="text-2xl font-bold text-gray-800 mb-4">Highway Analysis - Full Screen</h2>
                 <div id="fullscreenResultsContent" class="space-y-4">
                     <div class="text-center text-gray-500">
-                        <p>Calculate triangulation to see results</p>
+                        <p>Select a highway location or analyze complete highway</p>
                     </div>
                 </div>
-                <div class="mt-6">
+                <div class="mt-6" id="fullscreenHighwayResultsSection" style="display: none;">
+                    <h3 class="font-semibold text-gray-700 mb-2">Highway Analysis</h3>
+                    <div id="fullscreenHighwayResults" class="space-y-2">
+                        <!-- Highway results will be populated here -->
+                    </div>
+                </div>
+                <div class="mt-6" id="fullscreenGpsComparisonSection">
                     <h3 class="font-semibold text-gray-700 mb-2">GPS Comparison</h3>
                     <div id="fullscreenGpsComparison" class="space-y-2">
                         <!-- GPS comparison will be populated here -->
                     </div>
                 </div>
-                <div class="mt-6">
-                    <h3 class="font-semibold text-gray-700 mb-2">Road Paths</h3>
-                    <div id="fullscreenRoadPathsInfo" class="space-y-2">
-                        <!-- Road paths info will be populated here -->
-                    </div>
-                </div>
-                <div class="mt-6">
+                <div class="mt-6" id="fullscreenMethodsResultsSection">
                     <h3 class="font-semibold text-gray-700 mb-2">Algorithm Results</h3>
                     <div id="fullscreenMethodsResults" class="space-y-2">
                         <!-- Method results will be populated here -->
                     </div>
                 </div>
-                <div class="mt-6">
+                <div class="mt-6" id="fullscreenTowerDetailsSection">
                     <h3 class="font-semibold text-gray-700 mb-2">Tower Details</h3>
                     <div id="fullscreenTowerDetails" class="space-y-2">
                         <!-- Tower details will be populated here -->
@@ -791,13 +940,13 @@ async def serve_triangulation_ui():
             let fullscreenMarkers = [];
             let circles = [];
             let fullscreenCircles = [];
-            let roadPaths = [];
-            let fullscreenRoadPaths = [];
-            let towers = [];
             let currentData = null;
+            let currentLocation = null;
+            let highwayRoute = null;
+            let fullscreenHighwayRoute = null;
 
             function initializeMap() {
-                map = L.map('map').setView([28.6324, 77.2188], 14);
+                map = L.map('map').setView([28.613939, 77.229508], 10);
                 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                     attribution: '© OpenStreetMap contributors'
                 }).addTo(map);
@@ -805,34 +954,33 @@ async def serve_triangulation_ui():
 
             function initializeFullscreenMap() {
                 const container = document.getElementById('fullscreenMap');
-                fullscreenMap = L.map(container).setView([28.6324, 77.2188], 14);
+                fullscreenMap = L.map(container).setView([28.613939, 77.229508], 10);
                 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                     attribution: '© OpenStreetMap contributors'
                 }).addTo(fullscreenMap);
             }
 
             function clearMap() {
-                // Clear markers
                 markers.forEach(marker => map.removeLayer(marker));
                 markers = [];
-                
-                // Clear circles
                 circles.forEach(circle => map.removeLayer(circle));
                 circles = [];
-                
-                // Clear road paths
-                roadPaths.forEach(path => map.removeLayer(path));
-                roadPaths = [];
+                if (highwayRoute) {
+                    map.removeLayer(highwayRoute);
+                    highwayRoute = null;
+                }
             }
 
             function clearFullscreenMap() {
                 if (fullscreenMap) {
                     fullscreenMarkers.forEach(marker => fullscreenMap.removeLayer(marker));
                     fullscreenCircles.forEach(circle => fullscreenMap.removeLayer(circle));
-                    fullscreenRoadPaths.forEach(path => fullscreenMap.removeLayer(path));
                     fullscreenMarkers = [];
                     fullscreenCircles = [];
-                    fullscreenRoadPaths = [];
+                    if (fullscreenHighwayRoute) {
+                        fullscreenMap.removeLayer(fullscreenHighwayRoute);
+                        fullscreenHighwayRoute = null;
+                    }
                 }
             }
 
@@ -872,89 +1020,52 @@ async def serve_triangulation_ui():
                 return circle;
             }
 
-            function addRoadPath(points, color, popup, targetMap = map, isFullscreen = false) {
+            function addHighwayRoute(points, color, targetMap = map, isFullscreen = false) {
                 const polyline = L.polyline(points, {
                     color: color,
                     weight: 6,
                     opacity: 0.8,
-                    className: 'road-path'
+                    dashArray: '10, 5'
                 }).addTo(targetMap);
                 
-                if (popup) {
-                    polyline.bindPopup(popup);
-                }
-                
                 if (isFullscreen) {
-                    fullscreenRoadPaths.push(polyline);
+                    fullscreenHighwayRoute = polyline;
                 } else {
-                    roadPaths.push(polyline);
+                    highwayRoute = polyline;
                 }
                 return polyline;
             }
 
-            function updateTowersList() {
-                const list = document.getElementById('towersList');
-                if (towers.length === 0) {
-                    list.innerHTML = '<p class="text-sm text-gray-500 text-center">No towers added yet</p>';
-                } else {
-                    list.innerHTML = '';
-                    towers.forEach((tower, index) => {
-                        const item = document.createElement('div');
-                        item.className = 'bg-gray-50 p-2 rounded text-sm flex justify-between items-center';
-                        item.innerHTML = `
-                            <div>
-                                <strong>${tower.cell_id}</strong><br>
-                                Dist: ${tower.distance.toFixed(1)}m, Az: ${tower.azimuth}°
-                            </div>
-                            <button onclick="removeTower(${index})" class="text-red-500 hover:text-red-700">×</button>
-                        `;
-                        list.appendChild(item);
-                    });
+            function loadHighwayLocation(lat, lon) {
+                document.getElementById('testLat').value = lat;
+                document.getElementById('testLon').value = lon;
+                currentLocation = {latitude: lat, longitude: lon};
+                
+                // Center map on the location
+                map.setView([lat, lon], 13);
+                if (fullscreenMap) {
+                    fullscreenMap.setView([lat, lon], 13);
                 }
             }
 
-            window.removeTower = function(index) {
-                towers.splice(index, 1);
-                updateTowersList();
-            };
+            async function calculateHighwayTriangulation() {
+                const lat = parseFloat(document.getElementById('testLat').value);
+                const lon = parseFloat(document.getElementById('testLon').value);
+                const useGps = document.getElementById('useGps').checked;
 
-            function loadSampleData() {
-                towers = [
-                    { cell_id: '24823', distance: 746.32, azimuth: 217, signal_strength: -102.495 },
-                    { cell_id: '27639', distance: 769.69, azimuth: 205, signal_strength: -103.0 },
-                    { cell_id: '27682', distance: 876.91, azimuth: 221, signal_strength: -102.495 }
-                ];
-                // Set sample GPS coordinates
-                document.getElementById('gpsLat').value = '28.632429';
-                document.getElementById('gpsLon').value = '77.218788';
-                updateTowersList();
-            }
-
-            async function calculateTriangulation() {
-                if (towers.length < 2) {
-                    alert('Please add at least 2 towers for triangulation');
+                if (isNaN(lat) || isNaN(lon)) {
+                    alert('Please enter valid coordinates');
                     return;
                 }
 
-                const refLat = parseFloat(document.getElementById('refLat').value);
-                const refLon = parseFloat(document.getElementById('refLon').value);
-                const gpsLat = document.getElementById('gpsLat').value ? parseFloat(document.getElementById('gpsLat').value) : null;
-                const gpsLon = document.getElementById('gpsLon').value ? parseFloat(document.getElementById('gpsLon').value) : null;
-
                 const requestData = {
-                    tower_measurements: towers,
-                    reference_latitude: refLat,
-                    reference_longitude: refLon
+                    latitude: lat,
+                    longitude: lon,
+                    use_gps: useGps
                 };
 
-                // Add GPS data if provided
-                if (gpsLat && gpsLon) {
-                    requestData.gps_latitude = gpsLat;
-                    requestData.gps_longitude = gpsLon;
-                }
-
                 try {
-                    const response = await fetch('/calculate-triangulation', {
+                    const response = await fetch('/calculate-highway-triangulation', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(requestData)
@@ -965,20 +1076,45 @@ async def serve_triangulation_ui():
                     }
 
                     const data = await response.json();
-                    currentData = data; // Store for fullscreen
+                    currentData = data;
                     displayResults(data);
                     displayFullscreenResults(data);
-                    visualizeOnMap(data, refLat, refLon, gpsLat, gpsLon);
+                    visualizeOnMap(data, lat, lon, useGps ? {lat, lon} : null);
 
                 } catch (error) {
                     alert('Error calculating triangulation: ' + error.message);
                 }
             }
 
+            async function calculateCompleteHighway() {
+                try {
+                    const response = await fetch('/calculate-complete-highway', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('Server error: ' + response.status);
+                    }
+
+                    const data = await response.json();
+                    currentData = data;
+                    displayCompleteHighwayResults(data);
+                    displayFullscreenCompleteHighwayResults(data);
+                    visualizeCompleteHighwayOnMap(data);
+
+                } catch (error) {
+                    alert('Error analyzing complete highway: ' + error.message);
+                }
+            }
+
             function displayResults(data) {
+                // Hide highway results section for single point analysis
+                document.getElementById('highwayResultsSection').style.display = 'none';
+                document.getElementById('fullscreenHighwayResultsSection').style.display = 'none';
+                
                 const resultsDiv = document.getElementById('resultsContent');
                 const gpsDiv = document.getElementById('gpsComparison');
-                const roadsDiv = document.getElementById('roadPathsInfo');
                 const methodsDiv = document.getElementById('methodsResults');
                 const towersDiv = document.getElementById('towerDetails');
 
@@ -987,13 +1123,32 @@ async def serve_triangulation_ui():
                     return;
                 }
 
-                updateResultsDisplay(resultsDiv, gpsDiv, roadsDiv, methodsDiv, towersDiv, data);
+                updateSinglePointResults(resultsDiv, gpsDiv, methodsDiv, towersDiv, data);
+            }
+
+            function displayCompleteHighwayResults(data) {
+                // Show highway results section
+                document.getElementById('highwayResultsSection').style.display = 'block';
+                
+                const resultsDiv = document.getElementById('resultsContent');
+                const highwayDiv = document.getElementById('highwayResults');
+                const gpsDiv = document.getElementById('gpsComparison');
+                const methodsDiv = document.getElementById('methodsResults');
+                const towersDiv = document.getElementById('towerDetails');
+
+                if (data.error) {
+                    resultsDiv.innerHTML = `<div class="bg-red-50 p-4 rounded-lg text-red-700">Error: ${data.error}</div>`;
+                    return;
+                }
+
+                updateCompleteHighwayResults(resultsDiv, highwayDiv, gpsDiv, methodsDiv, towersDiv, data);
             }
 
             function displayFullscreenResults(data) {
+                document.getElementById('fullscreenHighwayResultsSection').style.display = 'none';
+                
                 const resultsDiv = document.getElementById('fullscreenResultsContent');
                 const gpsDiv = document.getElementById('fullscreenGpsComparison');
-                const roadsDiv = document.getElementById('fullscreenRoadPathsInfo');
                 const methodsDiv = document.getElementById('fullscreenMethodsResults');
                 const towersDiv = document.getElementById('fullscreenTowerDetails');
 
@@ -1002,10 +1157,27 @@ async def serve_triangulation_ui():
                     return;
                 }
 
-                updateResultsDisplay(resultsDiv, gpsDiv, roadsDiv, methodsDiv, towersDiv, data);
+                updateSinglePointResults(resultsDiv, gpsDiv, methodsDiv, towersDiv, data);
             }
 
-            function updateResultsDisplay(resultsDiv, gpsDiv, roadsDiv, methodsDiv, towersDiv, data) {
+            function displayFullscreenCompleteHighwayResults(data) {
+                document.getElementById('fullscreenHighwayResultsSection').style.display = 'block';
+                
+                const resultsDiv = document.getElementById('fullscreenResultsContent');
+                const highwayDiv = document.getElementById('fullscreenHighwayResults');
+                const gpsDiv = document.getElementById('fullscreenGpsComparison');
+                const methodsDiv = document.getElementById('fullscreenMethodsResults');
+                const towersDiv = document.getElementById('fullscreenTowerDetails');
+
+                if (data.error) {
+                    resultsDiv.innerHTML = `<div class="bg-red-50 p-4 rounded-lg text-red-700">Error: ${data.error}</div>`;
+                    return;
+                }
+
+                updateCompleteHighwayResults(resultsDiv, highwayDiv, gpsDiv, methodsDiv, towersDiv, data);
+            }
+
+            function updateSinglePointResults(resultsDiv, gpsDiv, methodsDiv, towersDiv, data) {
                 // Main results
                 resultsDiv.innerHTML = `
                     <div class="grid grid-cols-2 gap-4">
@@ -1056,57 +1228,6 @@ async def serve_triangulation_ui():
                     gpsDiv.innerHTML = '<div class="bg-gray-50 p-3 rounded-lg text-gray-500 text-center">No GPS data provided</div>';
                 }
 
-                // Road Paths Information
-                if (data.road_paths) {
-                    roadsDiv.innerHTML = '';
-                    let pathCount = 0;
-                    
-                    if (data.road_paths.input_to_calculated) {
-                        const route = data.road_paths.input_to_calculated;
-                        const pathDiv = document.createElement('div');
-                        pathDiv.className = 'bg-green-50 p-2 rounded text-sm';
-                        pathDiv.innerHTML = `
-                            <strong>🚗 Input → Calculated</strong><br>
-                            Distance: ${(route.distance / 1000).toFixed(2)} km<br>
-                            Time: ${Math.round(route.time / 60000)} minutes
-                        `;
-                        roadsDiv.appendChild(pathDiv);
-                        pathCount++;
-                    }
-
-                    Object.entries(data.road_paths).forEach(([key, pathInfo]) => {
-                        if (key.startsWith('calculated_to_tower_')) {
-                            const pathDiv = document.createElement('div');
-                            pathDiv.className = 'bg-purple-50 p-2 rounded text-sm';
-                            pathDiv.innerHTML = `
-                                <strong>📡 Calculated → Tower ${pathInfo.tower_id}</strong><br>
-                                Distance: ${(pathInfo.route.distance / 1000).toFixed(2)} km
-                            `;
-                            roadsDiv.appendChild(pathDiv);
-                            pathCount++;
-                        }
-                    });
-
-                    if (data.road_paths.tower_loop) {
-                        const route = data.road_paths.tower_loop;
-                        const pathDiv = document.createElement('div');
-                        pathDiv.className = 'bg-orange-50 p-2 rounded text-sm';
-                        pathDiv.innerHTML = `
-                            <strong>🔄 Tower Loop Route</strong><br>
-                            Distance: ${(route.distance / 1000).toFixed(2)} km<br>
-                            Connects all ${data.number_of_towers} towers
-                        `;
-                        roadsDiv.appendChild(pathDiv);
-                        pathCount++;
-                    }
-
-                    if (pathCount === 0) {
-                        roadsDiv.innerHTML = '<div class="bg-gray-50 p-3 rounded-lg text-gray-500 text-center">No road paths available</div>';
-                    }
-                } else {
-                    roadsDiv.innerHTML = '<div class="bg-gray-50 p-3 rounded-lg text-gray-500 text-center">No road paths calculated</div>';
-                }
-
                 // Method results
                 if (data.methods_results) {
                     methodsDiv.innerHTML = '';
@@ -1139,23 +1260,94 @@ async def serve_triangulation_ui():
                 }
             }
 
-            function visualizeOnMap(data, refLat, refLon, gpsLat, gpsLon) {
-                // Clear both maps
+            function updateCompleteHighwayResults(resultsDiv, highwayDiv, gpsDiv, methodsDiv, towersDiv, data) {
+                // Main results
+                resultsDiv.innerHTML = `
+                    <div class="bg-purple-50 p-4 rounded-lg">
+                        <h3 class="font-bold text-purple-800 text-lg">Complete Highway Analysis</h3>
+                        <p class="text-sm">Delhi-Jaipur Highway Route Mapping</p>
+                    </div>
+                `;
+
+                // Highway results
+                highwayDiv.innerHTML = `
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="bg-green-50 p-3 rounded-lg">
+                            <h4 class="font-semibold text-green-800">Points Processed</h4>
+                            <p class="text-2xl font-bold">${data.total_points_processed}/10</p>
+                        </div>
+                        <div class="bg-blue-50 p-3 rounded-lg">
+                            <h4 class="font-semibold text-blue-800">Average Accuracy</h4>
+                            <p class="text-2xl font-bold">${data.average_accuracy_meters.toFixed(1)}m</p>
+                        </div>
+                        <div class="bg-orange-50 p-3 rounded-lg">
+                            <h4 class="font-semibold text-orange-800">Road Distance</h4>
+                            <p class="text-2xl font-bold">${data.total_road_distance_km.toFixed(1)}km</p>
+                        </div>
+                        <div class="bg-red-50 p-3 rounded-lg">
+                            <h4 class="font-semibold text-red-800">Towers Used</h4>
+                            <p class="text-2xl font-bold">${data.all_towers.length}</p>
+                        </div>
+                    </div>
+                `;
+
+                // Point-by-point results
+                if (data.road_path) {
+                    const pointsDiv = document.createElement('div');
+                    pointsDiv.className = 'mt-4 space-y-2';
+                    pointsDiv.innerHTML = '<h4 class="font-semibold text-gray-700">Point Details:</h4>';
+                    
+                    data.road_path.forEach(point => {
+                        const pointDiv = document.createElement('div');
+                        pointDiv.className = 'bg-gray-50 p-2 rounded text-sm';
+                        pointDiv.innerHTML = `
+                            <strong>${point.name}</strong><br>
+                            Original: ${point.original_location[0].toFixed(6)}, ${point.original_location[1].toFixed(6)}<br>
+                            Calculated: ${point.calculated_location[0].toFixed(6)}, ${point.calculated_location[1].toFixed(6)}<br>
+                            Accuracy: ${point.accuracy.toFixed(1)}m, Towers: ${point.towers_used}
+                        `;
+                        pointsDiv.appendChild(pointDiv);
+                    });
+                    highwayDiv.appendChild(pointsDiv);
+                }
+
+                // Clear other sections for highway analysis
+                gpsDiv.innerHTML = '<div class="bg-gray-50 p-3 rounded-lg text-gray-500 text-center">GPS comparison available for single point analysis</div>';
+                methodsDiv.innerHTML = '<div class="bg-gray-50 p-3 rounded-lg text-gray-500 text-center">Method details available for single point analysis</div>';
+
+                // Tower details for highway
+                if (data.all_towers) {
+                    towersDiv.innerHTML = '';
+                    data.all_towers.forEach(tower => {
+                        const towerDiv = document.createElement('div');
+                        towerDiv.className = 'bg-gray-50 p-2 rounded text-sm';
+                        towerDiv.innerHTML = `
+                            <strong>Tower ${tower.id}</strong> (${tower.operator})<br>
+                            Location: ${tower.coordinates[0].toFixed(6)}, ${tower.coordinates[1].toFixed(6)}<br>
+                            Serves: ${tower.serves_point}<br>
+                            Distance: ${tower.distance.toFixed(1)}m, Signal: ${tower.signal_strength}dBm
+                        `;
+                        towersDiv.appendChild(towerDiv);
+                    });
+                }
+            }
+
+            function visualizeOnMap(data, inputLat, inputLon, gpsLocation) {
                 clearMap();
                 clearFullscreenMap();
 
                 // Add input location
-                addMarker(refLat, refLon, '#FF4444', 'I', 
-                    `<strong>Input Reference Location</strong><br>${refLat.toFixed(6)}, ${refLon.toFixed(6)}`, map);
-                if (fullscreenMap) addMarker(refLat, refLon, '#FF4444', 'I', 
-                    `<strong>Input Reference Location</strong><br>${refLat.toFixed(6)}, ${refLon.toFixed(6)}`, fullscreenMap, true);
+                addMarker(inputLat, inputLon, '#FF4444', 'I', 
+                    `<strong>Input Location</strong><br>${inputLat.toFixed(6)}, ${inputLon.toFixed(6)}`, map);
+                if (fullscreenMap) addMarker(inputLat, inputLon, '#FF4444', 'I', 
+                    `<strong>Input Location</strong><br>${inputLat.toFixed(6)}, ${inputLon.toFixed(6)}`, fullscreenMap, true);
 
                 // Add GPS location if available
-                if (gpsLat && gpsLon) {
-                    addMarker(gpsLat, gpsLon, '#4444FF', 'G',
-                        `<strong>GPS Location</strong><br>${gpsLat.toFixed(6)}, ${gpsLon.toFixed(6)}<br>Accuracy: ${data.gps_comparison?.gps_accuracy_meters.toFixed(1)}m`, map);
-                    if (fullscreenMap) addMarker(gpsLat, gpsLon, '#4444FF', 'G',
-                        `<strong>GPS Location</strong><br>${gpsLat.toFixed(6)}, ${gpsLon.toFixed(6)}<br>Accuracy: ${data.gps_comparison?.gps_accuracy_meters.toFixed(1)}m`, fullscreenMap, true);
+                if (gpsLocation) {
+                    addMarker(gpsLocation.lat, gpsLocation.lon, '#4444FF', 'G',
+                        `<strong>GPS Location</strong><br>${gpsLocation.lat.toFixed(6)}, ${gpsLocation.lon.toFixed(6)}<br>Accuracy: ${data.gps_comparison?.gps_accuracy_meters.toFixed(1)}m`, map);
+                    if (fullscreenMap) addMarker(gpsLocation.lat, gpsLocation.lon, '#4444FF', 'G',
+                        `<strong>GPS Location</strong><br>${gpsLocation.lat.toFixed(6)}, ${gpsLocation.lon.toFixed(6)}<br>Accuracy: ${data.gps_comparison?.gps_accuracy_meters.toFixed(1)}m`, fullscreenMap, true);
                 }
 
                 // Add calculated location
@@ -1196,41 +1388,10 @@ async def serve_triangulation_ui():
                     });
                 }
 
-                // Add road paths
-                if (data.road_paths) {
-                    // Input to Calculated path (Green)
-                    if (data.road_paths.input_to_calculated && data.road_paths.input_to_calculated.points.length > 0) {
-                        const route = data.road_paths.input_to_calculated;
-                        addRoadPath(route.points, '#00FF00', 
-                            `<strong>Input → Calculated Route</strong><br>Distance: ${(route.distance / 1000).toFixed(2)} km<br>Time: ${Math.round(route.time / 60000)} min`, map);
-                        if (fullscreenMap) addRoadPath(route.points, '#00FF00', 
-                            `<strong>Input → Calculated Route</strong><br>Distance: ${(route.distance / 1000).toFixed(2)} km<br>Time: ${Math.round(route.time / 60000)} min`, fullscreenMap, true);
-                    }
-
-                    // Calculated to Towers paths (Magenta)
-                    Object.entries(data.road_paths).forEach(([key, pathInfo]) => {
-                        if (key.startsWith('calculated_to_tower_') && pathInfo.route.points.length > 0) {
-                            addRoadPath(pathInfo.route.points, '#FF00FF',
-                                `<strong>Calculated → Tower ${pathInfo.tower_id}</strong><br>Distance: ${(pathInfo.route.distance / 1000).toFixed(2)} km`, map);
-                            if (fullscreenMap) addRoadPath(pathInfo.route.points, '#FF00FF',
-                                `<strong>Calculated → Tower ${pathInfo.tower_id}</strong><br>Distance: ${(pathInfo.route.distance / 1000).toFixed(2)} km`, fullscreenMap, true);
-                        }
-                    });
-
-                    // Tower loop path (Orange)
-                    if (data.road_paths.tower_loop && data.road_paths.tower_loop.points.length > 0) {
-                        const route = data.road_paths.tower_loop;
-                        addRoadPath(route.points, '#FFA500',
-                            `<strong>Tower Loop Route</strong><br>Distance: ${(route.distance / 1000).toFixed(2)} km<br>Connects all ${data.number_of_towers} towers`, map);
-                        if (fullscreenMap) addRoadPath(route.points, '#FFA500',
-                            `<strong>Tower Loop Route</strong><br>Distance: ${(route.distance / 1000).toFixed(2)} km<br>Connects all ${data.number_of_towers} towers`, fullscreenMap, true);
-                    }
-                }
-
                 // Fit maps to show all points
                 const allPoints = [];
-                allPoints.push([refLat, refLon]);
-                if (gpsLat && gpsLon) allPoints.push([gpsLat, gpsLon]);
+                allPoints.push([inputLat, inputLon]);
+                if (gpsLocation) allPoints.push([gpsLocation.lat, gpsLocation.lon]);
                 if (data.estimated_location) allPoints.push(data.estimated_location);
                 if (data.methods_results) {
                     Object.values(data.methods_results).forEach(result => {
@@ -1248,26 +1409,100 @@ async def serve_triangulation_ui():
                 if (fullscreenMap) fullscreenMap.fitBounds(bounds.pad(0.1));
             }
 
+            function visualizeCompleteHighwayOnMap(data) {
+                clearMap();
+                clearFullscreenMap();
+
+                if (!data.road_path || data.road_path.length === 0) {
+                    alert('No highway data to visualize');
+                    return;
+                }
+
+                // Create arrays for the highway route
+                const originalRoute = [];
+                const calculatedRoute = [];
+
+                // Add markers and build routes
+                data.road_path.forEach((point, index) => {
+                    const number = index + 1;
+                    
+                    // Original location marker
+                    addMarker(point.original_location[0], point.original_location[1], '#FF4444', number,
+                        `<strong>${point.name}</strong><br>Original: ${point.original_location[0].toFixed(6)}, ${point.original_location[1].toFixed(6)}`, map);
+                    
+                    // Calculated location marker  
+                    addMarker(point.calculated_location[0], point.calculated_location[1], '#44FF44', number,
+                        `<strong>${point.name}</strong><br>Calculated: ${point.calculated_location[0].toFixed(6)}, ${point.calculated_location[1].toFixed(6)}<br>Accuracy: ${point.accuracy.toFixed(1)}m`, map);
+
+                    // Add to routes
+                    originalRoute.push(point.original_location);
+                    calculatedRoute.push(point.calculated_location);
+
+                    // For fullscreen map
+                    if (fullscreenMap) {
+                        addMarker(point.original_location[0], point.original_location[1], '#FF4444', number,
+                            `<strong>${point.name}</strong><br>Original: ${point.original_location[0].toFixed(6)}, ${point.original_location[1].toFixed(6)}`, fullscreenMap, true);
+                        addMarker(point.calculated_location[0], point.calculated_location[1], '#44FF44', number,
+                            `<strong>${point.name}</strong><br>Calculated: ${point.calculated_location[0].toFixed(6)}, ${point.calculated_location[1].toFixed(6)}<br>Accuracy: ${point.accuracy.toFixed(1)}m`, fullscreenMap, true);
+                    }
+                });
+
+                // Add highway routes
+                addHighwayRoute(originalRoute, '#FF4444', map);
+                addHighwayRoute(calculatedRoute, '#44FF44', map);
+
+                if (fullscreenMap) {
+                    addHighwayRoute(originalRoute, '#FF4444', fullscreenMap, true);
+                    addHighwayRoute(calculatedRoute, '#44FF44', fullscreenMap, true);
+                }
+
+                // Add all towers
+                if (data.all_towers) {
+                    data.all_towers.forEach(tower => {
+                        addMarker(tower.coordinates[0], tower.coordinates[1], 'purple', 'T',
+                            `<strong>Tower ${tower.id}</strong> (${tower.operator})<br>${tower.coordinates[0].toFixed(6)}, ${tower.coordinates[1].toFixed(6)}<br>Serves: ${tower.serves_point}`, map);
+                        addCircle(tower.coordinates[0], tower.coordinates[1], tower.distance, 'blue', map);
+
+                        if (fullscreenMap) {
+                            addMarker(tower.coordinates[0], tower.coordinates[1], 'purple', 'T',
+                                `<strong>Tower ${tower.id}</strong> (${tower.operator})<br>${tower.coordinates[0].toFixed(6)}, ${tower.coordinates[1].toFixed(6)}<br>Serves: ${tower.serves_point}`, fullscreenMap, true);
+                            addCircle(tower.coordinates[0], tower.coordinates[1], tower.distance, 'blue', fullscreenMap, true);
+                        }
+                    });
+                }
+
+                // Fit map to show entire highway
+                const allPoints = [...originalRoute, ...calculatedRoute];
+                if (data.all_towers) {
+                    data.all_towers.forEach(tower => {
+                        allPoints.push(tower.coordinates);
+                    });
+                }
+
+                const bounds = L.latLngBounds(allPoints);
+                map.fitBounds(bounds.pad(0.1));
+                if (fullscreenMap) fullscreenMap.fitBounds(bounds.pad(0.1));
+            }
+
             function toggleFullscreen() {
                 const fullscreenElement = document.getElementById('fullscreenMode');
                 if (fullscreenElement.style.display === 'none' || !fullscreenElement.style.display) {
-                    // Enter fullscreen
                     fullscreenElement.style.display = 'grid';
                     if (!fullscreenMap) {
                         initializeFullscreenMap();
                     }
-                    // Update fullscreen results with current data
-                    if (currentData) {
-                        displayFullscreenResults(currentData);
-                        const refLat = parseFloat(document.getElementById('refLat').value);
-                        const refLon = parseFloat(document.getElementById('refLon').value);
-                        const gpsLat = document.getElementById('gpsLat').value ? parseFloat(document.getElementById('gpsLat').value) : null;
-                        const gpsLon = document.getElementById('gpsLon').value ? parseFloat(document.getElementById('gpsLon').value) : null;
-                        visualizeOnMap(currentData, refLat, refLon, gpsLat, gpsLon);
+                    if (currentData && currentLocation) {
+                        if (currentData.complete_highway_analysis) {
+                            displayFullscreenCompleteHighwayResults(currentData);
+                            visualizeCompleteHighwayOnMap(currentData);
+                        } else {
+                            displayFullscreenResults(currentData);
+                            const useGps = document.getElementById('useGps').checked;
+                            visualizeOnMap(currentData, currentLocation.latitude, currentLocation.longitude, useGps ? currentLocation : null);
+                        }
                     }
                     document.body.style.overflow = 'hidden';
                 } else {
-                    // Exit fullscreen
                     fullscreenElement.style.display = 'none';
                     document.body.style.overflow = 'auto';
                 }
@@ -1277,61 +1512,75 @@ async def serve_triangulation_ui():
             document.addEventListener('DOMContentLoaded', function() {
                 initializeMap();
                 
-                document.getElementById('addTowerBtn').addEventListener('click', function() {
-                    const cellId = document.getElementById('cellId').value;
-                    const distance = parseFloat(document.getElementById('distance').value);
-                    const azimuth = parseFloat(document.getElementById('azimuth').value);
-                    const signal = parseFloat(document.getElementById('signal').value);
-
-                    if (!cellId || isNaN(distance) || isNaN(azimuth)) {
-                        alert('Please fill all tower fields');
-                        return;
-                    }
-
-                    towers.push({
-                        cell_id: cellId,
-                        distance: distance,
-                        azimuth: azimuth,
-                        signal_strength: signal
-                    });
-
-                    updateTowersList();
-                    
-                    // Clear input fields
-                    document.getElementById('cellId').value = '';
-                    document.getElementById('distance').value = '';
-                    document.getElementById('azimuth').value = '';
-                });
-
-                document.getElementById('calculateBtn').addEventListener('click', calculateTriangulation);
+                document.getElementById('calculateHighwayBtn').addEventListener('click', calculateHighwayTriangulation);
+                document.getElementById('calculateCompleteHighwayBtn').addEventListener('click', calculateCompleteHighway);
                 document.getElementById('clearBtn').addEventListener('click', function() {
-                    towers = [];
-                    updateTowersList();
                     clearMap();
                     clearFullscreenMap();
-                    document.getElementById('resultsContent').innerHTML = '<div class="text-center text-gray-500"><p>Calculate triangulation to see results</p></div>';
-                    document.getElementById('fullscreenResultsContent').innerHTML = '<div class="text-center text-gray-500"><p>Calculate triangulation to see results</p></div>';
+                    document.getElementById('resultsContent').innerHTML = '<div class="text-center text-gray-500"><p>Select a highway location or analyze complete highway</p></div>';
+                    document.getElementById('fullscreenResultsContent').innerHTML = '<div class="text-center text-gray-500"><p>Select a highway location or analyze complete highway</p></div>';
+                    document.getElementById('highwayResultsSection').style.display = 'none';
+                    document.getElementById('fullscreenHighwayResultsSection').style.display = 'none';
                     document.getElementById('gpsComparison').innerHTML = '';
                     document.getElementById('fullscreenGpsComparison').innerHTML = '';
-                    document.getElementById('roadPathsInfo').innerHTML = '';
-                    document.getElementById('fullscreenRoadPathsInfo').innerHTML = '';
                     document.getElementById('methodsResults').innerHTML = '';
                     document.getElementById('fullscreenMethodsResults').innerHTML = '';
                     document.getElementById('towerDetails').innerHTML = '';
                     document.getElementById('fullscreenTowerDetails').innerHTML = '';
-                    document.getElementById('gpsLat').value = '';
-                    document.getElementById('gpsLon').value = '';
                     currentData = null;
+                    currentLocation = null;
                 });
-                document.getElementById('loadSampleBtn').addEventListener('click', loadSampleData);
                 document.getElementById('fullscreenBtn').addEventListener('click', toggleFullscreen);
                 document.getElementById('exitFullscreenBtn').addEventListener('click', toggleFullscreen);
+
+                // Load first location by default
+                loadHighwayLocation(28.613939, 77.229508);
             });
         </script>
     </body>
     </html>
     """
     return HTMLResponse(content=html_content)
+
+@app.post("/calculate-complete-highway")
+async def calculate_complete_highway():
+    """Calculate triangulation for all highway points and return complete analysis"""
+    try:
+        tracker = HighPrecisionESIMTracker()
+        result = tracker.calculate_complete_highway_triangulation()
+        return result
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Complete highway analysis error: {str(e)}")
+
+@app.post("/calculate-highway-triangulation")
+async def calculate_highway_triangulation(request: HighwayLocationRequest):
+    try:
+        tracker = HighPrecisionESIMTracker()
+        
+        # Get tower measurements for the specified location
+        location = (request.latitude, request.longitude)
+        tower_measurements = tracker.get_tower_measurements_for_location(location)
+        
+        if not tower_measurements:
+            return {'error': f'No tower data found for location {location}'}
+        
+        # Set GPS location if requested
+        gps_location = None
+        if request.use_gps:
+            gps_location = location
+        
+        # Perform triangulation
+        result = tracker.advanced_triangulation(
+            tower_measurements, 
+            reference_location=location,
+            gps_location=gps_location
+        )
+        
+        return result
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Highway triangulation error: {str(e)}")
 
 @app.post("/calculate-triangulation")
 async def calculate_triangulation(request: TriangulationRequest):
